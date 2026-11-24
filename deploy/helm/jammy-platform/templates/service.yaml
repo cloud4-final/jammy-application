@@ -1,0 +1,13 @@
+{{- range $service := list "instruction-api" "dispatcher" "processor" "archiver" "portal-publisher" "plantsim" }}
+  {{- if (index $.Values $service).enabled }}
+---
+{{ include "jammy.service" (dict "root" $ "component" $service "type" "ClusterIP" "http" (has $service (list "instruction-api" "plantsim"))) }}
+  {{- end }}
+{{- end }}
+{{- if .Values.ingest.enabled }}
+  {{- range .Values.ingest.instances }}
+    {{- $service := default dict .service }}
+---
+{{ include "jammy.service" (dict "root" $ "component" (printf "ingest-%s" .name) "type" (default "ClusterIP" $service.type) "nodePort" $service.nodePort "http" true) }}
+  {{- end }}
+{{- end }}

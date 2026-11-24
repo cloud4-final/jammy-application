@@ -1,0 +1,6 @@
+*
+!go.mod
+!go.sum
+!libs/go/pb/**
+!tools/payloadgen/gen/**
+!loadtest/perf/loadgen/*.go

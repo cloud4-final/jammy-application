@@ -1,0 +1,1 @@
+{"batch_id":"json-snake-case","producer_id":"producer-1","events":[{"event_id":"event-1","routing_key":"solar-1","profile":"solar","schema_version":1,"event_time_unix_ms":"1795392000000","payload":"Cgdzb2xhci0xEQAAAAAAAClAGQAAAAAAkIpAIQAAAAAAgDtAKAE="}]}

@@ -1,0 +1,20 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "jammy.name" (dict "root" . "component" "ingress") }}
+  namespace: {{ include "jammy.namespace" . }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: jammy-platform
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
+  policyTypes: [Ingress]
+  ingress:
+    # Ingest and instruction callers can be outside the cluster.
+    - ports:
+        - {port: http, protocol: TCP}
+    # Alloy can scrape from a separate namespace.
+    - from:
+        - namespaceSelector: {}
+      ports:
+        - {port: admin, protocol: TCP}

@@ -1,0 +1,1 @@
+{"batchId":"json-canonical","producerId":"producer-1","events":[{"eventId":"event-1","routingKey":"solar-1","profile":"solar","schemaVersion":1,"eventTimeUnixMs":"1795392000000","payload":"Cgdzb2xhci0xEQAAAAAAAClAGQAAAAAAkIpAIQAAAAAAgDtAKAE="}]}

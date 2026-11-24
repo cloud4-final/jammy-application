@@ -1,0 +1,12 @@
+{{- range $service := list "instruction-api" "dispatcher" "processor" "archiver" "portal-publisher" "plantsim" }}
+  {{- if (index $.Values $service).enabled }}
+---
+{{ include "jammy.pdb" (dict "root" $ "component" $service) }}
+  {{- end }}
+{{- end }}
+{{- if .Values.ingest.enabled }}
+  {{- range .Values.ingest.instances }}
+---
+{{ include "jammy.pdb" (dict "root" $ "component" (printf "ingest-%s" .name)) }}
+  {{- end }}
+{{- end }}

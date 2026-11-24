@@ -1,0 +1,108 @@
+global:
+  image:
+    registry: ghcr.io/cloud4-final/jammy-application
+    tag: ""
+  imagePullSecrets: [ghcr-pull]
+  siteId: ""
+  pipelineMode: jetstream
+  existingSecret: ""
+  nats:
+    url: ""
+    # Optional Secret with key NATS_CREDS when NATS requires credentials.
+    existingSecret: ""
+  s3:
+    bucket: ""
+    endpoint: ""
+    region: ap-northeast-2
+    forcePathStyle: false
+  otlpEndpoint: ""
+  environment: production
+
+instruction-api:
+  enabled: true
+  replicas: 1
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {cpu: "1", memory: 512Mi}
+  nodeSelector: {}
+  tolerations: []
+  env: {}
+
+dispatcher:
+  enabled: true
+  replicas: 1
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {cpu: "1", memory: 512Mi}
+  nodeSelector: {}
+  tolerations: []
+  env:
+    LEASE_MODE: ""
+    PLANT_GATEWAY_URL: ""
+
+ingest:
+  enabled: true
+  impl: go
+  replicas: 1
+  resources:
+    requests: {cpu: 250m, memory: 256Mi}
+    limits: {cpu: "2", memory: 1Gi}
+  nodeSelector: {}
+  tolerations: []
+  env: {}
+  instances:
+    - name: a1
+      stream: raw-a1
+      nodeSelector: {}
+      service: {type: ClusterIP}
+
+processor:
+  enabled: true
+  impl: go
+  replicas: 1
+  resources:
+    requests: {cpu: 250m, memory: 256Mi}
+    limits: {cpu: "2", memory: 1Gi}
+  nodeSelector: {}
+  tolerations: []
+  env: {}
+
+archiver:
+  enabled: true
+  impl: go
+  replicas: 1
+  resources:
+    requests: {cpu: 250m, memory: 256Mi}
+    limits: {cpu: "2", memory: 1Gi}
+  nodeSelector: {}
+  tolerations: []
+  env: {}
+
+portal-publisher:
+  enabled: true
+  replicas: 1
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {cpu: "1", memory: 512Mi}
+  nodeSelector: {}
+  tolerations: []
+  env: {}
+
+plantsim:
+  enabled: false
+  replicas: 1
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {cpu: "1", memory: 512Mi}
+  nodeSelector: {}
+  tolerations: []
+  env: {}
+
+migrate:
+  enabled: true
+  resources:
+    requests: {cpu: 100m, memory: 64Mi}
+    limits: {cpu: "1", memory: 256Mi}
+  nodeSelector: {}
+  tolerations: []
+  env: {}

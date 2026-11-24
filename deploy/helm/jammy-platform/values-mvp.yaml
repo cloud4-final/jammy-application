@@ -1,0 +1,26 @@
+global:
+  siteId: jammy-a
+  pipelineMode: direct-db
+
+instruction-api:
+  nodeSelector: {role: main}
+dispatcher:
+  nodeSelector: {role: main}
+ingest:
+  nodeSelector: {role: main}
+  env:
+    WEB_CONCURRENCY: "2"
+  instances:
+    - name: a1
+      nodeSelector: {}
+      service: {type: ClusterIP}
+processor:
+  nodeSelector: {role: main}
+archiver:
+  nodeSelector: {role: main}
+portal-publisher:
+  nodeSelector: {role: main}
+plantsim:
+  nodeSelector: {role: main}
+migrate:
+  nodeSelector: {role: main}

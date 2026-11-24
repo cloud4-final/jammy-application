@@ -1,0 +1,23 @@
+suite: migration metadata
+templates:
+  - job-migrate.yaml
+values:
+  - ../values-mvp.yaml
+  - site-values.yaml
+tests:
+  - it: invokes the migration launcher with the secret and CLI args
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].command
+          value: ["/migrate-from-env"]
+      - equal:
+          path: spec.template.spec.containers[0].args
+          value: ["-path", "/migrations", "up"]
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DATABASE_URL
+            valueFrom:
+              secretKeyRef:
+                name: jammy-platform-test
+                key: DATABASE_URL

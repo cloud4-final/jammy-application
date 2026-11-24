@@ -1,0 +1,239 @@
+TAG=0.1.0-c0242ec SHA=c0242ec47e40fc38e12e6d5e9344b3ea0da8260e IMPL=py ARM=mvp (2026-11-24 16:57:40 KST)
+=== Pre-clean volumes ===
+time="2026-11-24T16:57:40+09:00" level=warning msg="Warning: No resource found to remove for project \"jammy-local\"."
+pre_clean_rc=0
+=== make up-mvp APPS=1 IMPL=py TAG=0.1.0-c0242ec ===
+ Network jammy-local_default  Creating
+ Network jammy-local_default  Created
+ Volume "jammy-local_pg-primary"  Creating
+ Volume "jammy-local_pg-primary"  Created
+ Volume "jammy-local_seaweedfs"  Creating
+ Volume "jammy-local_seaweedfs"  Created
+ Container jammy-local-pg-primary-1  Creating
+ Container jammy-local-dynamodb-local-1  Creating
+ Container jammy-local-seaweedfs-1  Creating
+ Container jammy-local-elasticmq-1  Creating
+ Container jammy-local-dynamodb-local-1  Created
+ Container jammy-local-elasticmq-1  Created
+ Container jammy-local-seaweedfs-1  Created
+ Container jammy-local-pg-primary-1  Created
+ Container jammy-local-elasticmq-1  Starting
+ Container jammy-local-dynamodb-local-1  Starting
+ Container jammy-local-pg-primary-1  Starting
+ Container jammy-local-seaweedfs-1  Starting
+ Container jammy-local-dynamodb-local-1  Started
+ Container jammy-local-elasticmq-1  Started
+ Container jammy-local-seaweedfs-1  Started
+ Container jammy-local-pg-primary-1  Started
+ Container jammy-local-pg-primary-1  Waiting
+ Container jammy-local-elasticmq-1  Waiting
+ Container jammy-local-dynamodb-local-1  Waiting
+ Container jammy-local-seaweedfs-1  Waiting
+ Container jammy-local-seaweedfs-1  Healthy
+ Container jammy-local-elasticmq-1  Healthy
+ Container jammy-local-dynamodb-local-1  Healthy
+ Container jammy-local-pg-primary-1  Healthy
+#1 [internal] load local bake definitions
+#1 reading from stdin 452B done
+#1 DONE 0.0s
+
+#2 [internal] load build definition from Dockerfile
+#2 transferring dockerfile: 127B done
+#2 DONE 0.0s
+
+#3 [internal] load metadata for docker.io/migrate/migrate:v4.20.1
+#3 DONE 0.0s
+
+#4 [internal] load .dockerignore
+#4 transferring context: 2B done
+#4 DONE 0.0s
+
+#5 [internal] load build context
+#5 transferring context: 381B done
+#5 DONE 0.0s
+
+#6 [1/2] FROM docker.io/migrate/migrate:v4.20.1@sha256:76cc2074cb6642631f34a898ced71e6aeaa6b1a4d78c4daa743275a22e0c5be7
+#6 resolve docker.io/migrate/migrate:v4.20.1@sha256:76cc2074cb6642631f34a898ced71e6aeaa6b1a4d78c4daa743275a22e0c5be7 0.0s done
+#6 DONE 0.0s
+
+#7 [2/2] COPY contracts/db/migrations/ /migrations/
+#7 CACHED
+
+#8 exporting to image
+#8 exporting layers done
+#8 exporting manifest sha256:b300115b248f250165b3b0e6fbdd28794e3af709d6d7d9bd69fe1f33cfdad919 done
+#8 exporting config sha256:6a9ced1c1d7df4d782ff74cb1ee1a528fc24ff8e169c0af578c1aff52444ecc7 done
+#8 exporting attestation manifest sha256:2dbb18da02fadcdb08076c86ab62f67f544ffe25674657faf746d19dc99e0b09 0.0s done
+#8 exporting manifest list sha256:1354dba2a2e40f38f92f3b54d8df9130c4e3faf13af996533dc1e01704002cab
+#8 exporting manifest list sha256:1354dba2a2e40f38f92f3b54d8df9130c4e3faf13af996533dc1e01704002cab done
+#8 naming to ghcr.io/cloud4-final/jammy-application/migrate:0.1.0-c0242ec done
+#8 unpacking to ghcr.io/cloud4-final/jammy-application/migrate:0.1.0-c0242ec 0.0s done
+#8 DONE 0.1s
+
+#9 resolving provenance for metadata file
+#9 DONE 0.0s
+ migrate  Built
+ Container jammy-local-migrate-1  Creating
+ Container jammy-local-migrate-1  Created
+ Container jammy-local-migrate-1  Starting
+ Container jammy-local-migrate-1  Started
+PASS: S3 bucket jammy-local is listable
+PASS: SQS queue jammy-instructions exists
+PASS: DynamoDB table jammy-site-lease is active with the lease_name key
+ Volume "jammy-local_archiver-stage"  Creating
+ Volume "jammy-local_archiver-stage"  Created
+ Container jammy-local-plantsim-1  Creating
+ Container jammy-local-dispatcher-1-1  Creating
+ Container jammy-local-instruction-api-1  Creating
+ Container jammy-local-archiver-1  Creating
+ Container jammy-local-processor-1  Creating
+ Container jammy-local-ingest-a1-1  Creating
+ Container jammy-local-portal-publisher-1  Creating
+ Container jammy-local-dispatcher-1-1  Created
+ Container jammy-local-processor-1  Created
+ Container jammy-local-portal-publisher-1  Created
+ Container jammy-local-ingest-a1-1  Created
+ Container jammy-local-instruction-api-1  Created
+ Container jammy-local-archiver-1  Created
+ Container jammy-local-plantsim-1  Created
+ Container jammy-local-ingest-a1-1  Starting
+ Container jammy-local-processor-1  Starting
+ Container jammy-local-portal-publisher-1  Starting
+ Container jammy-local-archiver-1  Starting
+ Container jammy-local-instruction-api-1  Starting
+ Container jammy-local-plantsim-1  Starting
+ Container jammy-local-dispatcher-1-1  Starting
+ Container jammy-local-portal-publisher-1  Started
+ Container jammy-local-plantsim-1  Started
+ Container jammy-local-archiver-1  Started
+ Container jammy-local-ingest-a1-1  Started
+ Container jammy-local-processor-1  Started
+ Container jammy-local-instruction-api-1  Started
+ Container jammy-local-dispatcher-1-1  Started
+Ready (mvp): archiver, dispatcher-1, ingest-a1, instruction-api, plantsim, portal-publisher, processor
+up_rc=0
+=== make e2e IMPL=py ARM=mvp ===
+============================= test session starts ==============================
+platform darwin -- Python 3.14.10, pytest-9.1.1, pluggy-1.7.0 -- $HOME/orca/workspaces/Final-Project/bp-e2e/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: $HOME/orca/workspaces/Final-Project/bp-e2e/tests/e2e
+configfile: pyproject.toml
+plugins: anyio-4.16.0
+collecting ... collected 52 items
+
+tests/e2e/test_control.py::test_instruction_to_commands_acked PASSED     [  1%]
+tests/e2e/test_control.py::test_dispatcher_leader_failover_no_duplicate_commands SKIPPED [  3%]
+tests/e2e/test_control.py::test_dispatcher_restart_no_duplicate_commands PASSED [  5%]
+tests/e2e/test_control.py::test_stale_epoch_command_rejected PASSED      [  7%]
+tests/e2e/test_control.py::test_instruction_api_negative_cases PASSED    [  9%]
+tests/e2e/test_faults.py::test_kill9_processor_exact PASSED              [ 11%]
+tests/e2e/test_faults.py::test_kill9_archiver_exact PASSED               [ 13%]
+tests/e2e/test_faults.py::test_kill9_ingest_acked_not_lost PASSED        [ 15%]
+tests/e2e/test_faults.py::test_jetstream_full_503 SKIPPED (requires ...) [ 17%]
+tests/e2e/test_pipeline.py::test_gate_cases_over_http[valid-solar] PASSED [ 19%]
+tests/e2e/test_pipeline.py::test_gate_cases_over_http[valid-synth-small] PASSED [ 21%]
+tests/e2e/test_pipeline.py::test_gate_cases_over_http[valid-synth-large] PASSED [ 23%]
+tests/e2e/test_pipeline.py::test_gate_cases_over_http[bad-event-id] PASSED [ 25%]
+tests/e2e/test_pipeline.py::test_gate_cases_over_http[bad-routing-key] PASSED [ 26%]
+tests/e2e/test_pipeline.py::test_gate_cases_over_http[unknown-profile] PASSED [ 28%]
+tests/e2e/test_pipeline.py::test_gate_cases_over_http[unsupported-version] PASSED [ 30%]
+tests/e2e/test_pipeline.py::test_gate_cases_over_http[too-old] PASSED    [ 32%]
+tests/e2e/test_pipeline.py::test_gate_cases_over_http[too-far-in-future] PASSED [ 34%]
+tests/e2e/test_pipeline.py::test_gate_cases_over_http[earliest-valid-time] PASSED [ 36%]
+tests/e2e/test_pipeline.py::test_gate_cases_over_http[latest-valid-time] PASSED [ 38%]
+tests/e2e/test_pipeline.py::test_gate_cases_over_http[bad-payload] PASSED [ 40%]
+tests/e2e/test_pipeline.py::test_gate_cases_over_http[wrong-solar-asset] PASSED [ 42%]
+tests/e2e/test_pipeline.py::test_gate_cases_over_http[out-of-range] PASSED [ 44%]
+tests/e2e/test_pipeline.py::test_gate_cases_over_http[unspecified-solar-status] PASSED [ 46%]
+tests/e2e/test_pipeline.py::test_gate_cases_over_http[unknown-solar-status] PASSED [ 48%]
+tests/e2e/test_pipeline.py::test_gate_cases_over_http[duplicate-in-batch] PASSED [ 50%]
+tests/e2e/test_pipeline.py::test_gate_cases_over_http[bad-attrs] PASSED  [ 51%]
+tests/e2e/test_pipeline.py::test_gate_cases_over_http[empty-batch] PASSED [ 53%]
+tests/e2e/test_pipeline.py::test_gate_cases_over_http[bad-batch-id] PASSED [ 55%]
+tests/e2e/test_pipeline.py::test_gate_cases_over_http[long-producer-id] PASSED [ 57%]
+tests/e2e/test_pipeline.py::test_gate_cases_over_http[empty-producer-id] PASSED [ 59%]
+tests/e2e/test_pipeline.py::test_gate_cases_over_http[too-many-events] PASSED [ 61%]
+tests/e2e/test_pipeline.py::test_gate_cases_over_http[json-canonical] PASSED [ 63%]
+tests/e2e/test_pipeline.py::test_gate_cases_over_http[json-snake-case] PASSED [ 65%]
+tests/e2e/test_pipeline.py::test_gate_cases_over_http[json-numeric-int64] PASSED [ 67%]
+tests/e2e/test_pipeline.py::test_gate_cases_over_http[json-unknown-field] PASSED [ 69%]
+tests/e2e/test_pipeline.py::test_gate_cases_over_http[json-mixed-batch-aliases] PASSED [ 71%]
+tests/e2e/test_pipeline.py::test_gate_cases_over_http[json-mixed-event-aliases] PASSED [ 73%]
+tests/e2e/test_pipeline.py::test_gate_cases_over_http[json-invalid] PASSED [ 75%]
+tests/e2e/test_pipeline.py::test_gate_cases_over_http[json-zstd] PASSED  [ 76%]
+tests/e2e/test_pipeline.py::test_gate_cases_over_http[truncated_zstd_frame] PASSED [ 78%]
+tests/e2e/test_pipeline.py::test_gate_cases_over_http[trailing_bytes_after_frame] PASSED [ 80%]
+tests/e2e/test_pipeline.py::test_gate_cases_over_http[two_zstd_frames] PASSED [ 82%]
+tests/e2e/test_pipeline.py::test_gate_cases_over_http[wire-size-limit] PASSED [ 84%]
+tests/e2e/test_pipeline.py::test_gate_cases_over_http[zstd-expansion-limit] PASSED [ 86%]
+tests/e2e/test_pipeline.py::test_three_profiles_end_to_end PASSED        [ 88%]
+tests/e2e/test_pipeline.py::test_duplicate_batch_resend_no_double_count PASSED [ 90%]
+tests/e2e/test_pipeline.py::test_direct_db_partition_archived_and_dropped PASSED [ 92%]
+tests/e2e/test_pipeline.py::test_zstd_frame_errors_400[truncated] PASSED [ 94%]
+tests/e2e/test_pipeline.py::test_zstd_frame_errors_400[trailing_bytes] PASSED [ 96%]
+tests/e2e/test_pipeline.py::test_zstd_frame_errors_400[two_frames] PASSED [ 98%]
+tests/e2e/test_pipeline.py::test_jetstream_message_contract SKIPPED      [100%]
+
+======================== 49 passed, 3 skipped in 56.50s ========================
+e2e_rc=0
+=== make down ===
+docker compose --project-directory deploy/compose --profile '*' down
+ Container jammy-local-elasticmq-1  Stopping
+ Container jammy-local-seaweedfs-1  Stopping
+ Container jammy-local-migrate-1  Stopping
+ Container jammy-local-dispatcher-1-1  Stopping
+ Container jammy-local-plantsim-1  Stopping
+ Container jammy-local-processor-1  Stopping
+ Container jammy-local-dynamodb-local-1  Stopping
+ Container jammy-local-ingest-a1-1  Stopping
+ Container jammy-local-portal-publisher-1  Stopping
+ Container jammy-local-archiver-1  Stopping
+ Container jammy-local-instruction-api-1  Stopping
+ Container jammy-local-migrate-1  Stopped
+ Container jammy-local-migrate-1  Removing
+ Container jammy-local-migrate-1  Removed
+ Container jammy-local-pg-primary-1  Stopping
+ Container jammy-local-elasticmq-1  Stopped
+ Container jammy-local-elasticmq-1  Removing
+ Container jammy-local-plantsim-1  Stopped
+ Container jammy-local-plantsim-1  Removing
+ Container jammy-local-elasticmq-1  Removed
+ Container jammy-local-plantsim-1  Removed
+ Container jammy-local-dynamodb-local-1  Stopped
+ Container jammy-local-dynamodb-local-1  Removing
+ Container jammy-local-pg-primary-1  Stopped
+ Container jammy-local-pg-primary-1  Removing
+ Container jammy-local-dynamodb-local-1  Removed
+ Container jammy-local-pg-primary-1  Removed
+ Container jammy-local-portal-publisher-1  Stopped
+ Container jammy-local-portal-publisher-1  Removing
+ Container jammy-local-instruction-api-1  Stopped
+ Container jammy-local-instruction-api-1  Removing
+ Container jammy-local-processor-1  Stopped
+ Container jammy-local-processor-1  Removing
+ Container jammy-local-portal-publisher-1  Removed
+ Container jammy-local-dispatcher-1-1  Stopped
+ Container jammy-local-dispatcher-1-1  Removing
+ Container jammy-local-processor-1  Removed
+ Container jammy-local-dispatcher-1-1  Removed
+ Container jammy-local-instruction-api-1  Removed
+ Container jammy-local-archiver-1  Stopped
+ Container jammy-local-archiver-1  Removing
+ Container jammy-local-archiver-1  Removed
+ Container jammy-local-ingest-a1-1  Stopped
+ Container jammy-local-ingest-a1-1  Removing
+ Container jammy-local-ingest-a1-1  Removed
+ Container jammy-local-seaweedfs-1  Stopped
+ Container jammy-local-seaweedfs-1  Removing
+ Container jammy-local-seaweedfs-1  Removed
+ Network jammy-local_default  Removing
+ Network jammy-local_default  Removed
+down_rc=0
+=== Post-clean down -v ===
+ Volume jammy-local_archiver-stage  Removing
+ Volume jammy-local_seaweedfs  Removing
+ Volume jammy-local_pg-primary  Removing
+ Volume jammy-local_archiver-stage  Removed
+ Volume jammy-local_seaweedfs  Removed
+ Volume jammy-local_pg-primary  Removed
+post_clean_rc=0
