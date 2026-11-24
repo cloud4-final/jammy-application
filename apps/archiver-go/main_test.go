@@ -57,11 +57,14 @@ func container(t *testing.T, port string, args ...string) string {
 	t.Helper()
 	run := func(args ...string) string {
 		t.Helper()
-		out, err := exec.Command("docker", args...).CombinedOutput()
-		if err != nil {
-			t.Fatalf("docker %v: %v: %s", args, err, out)
+		var stdout, stderr bytes.Buffer
+		cmd := exec.Command("docker", args...)
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("docker %v: %v: %s%s", args, err, stderr.String(), stdout.String())
 		}
-		return strings.TrimSpace(string(out))
+		return strings.TrimSpace(stdout.String())
 	}
 	id := run(append([]string{"run", "-d", "-p", "127.0.0.1::" + port}, args...)...)
 	t.Cleanup(func() { run("rm", "-f", id) })

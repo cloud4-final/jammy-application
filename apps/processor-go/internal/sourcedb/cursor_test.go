@@ -1,6 +1,8 @@
 package sourcedb
 
 import (
+	"bytes"
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,11 +20,14 @@ import (
 func TestDBModeCursorProgressExact(t *testing.T) {
 	docker := func(args ...string) string {
 		t.Helper()
-		out, err := exec.Command("docker", args...).CombinedOutput()
-		if err != nil {
-			t.Fatalf("docker %v: %v\n%s", args, err, out)
+		var stdout, stderr bytes.Buffer
+		cmd := exec.Command("docker", args...)
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("docker %v: %v\n%s%s", args, err, stderr.String(), stdout.String())
 		}
-		return strings.TrimSpace(string(out))
+		return strings.TrimSpace(stdout.String())
 	}
 	check := func(err error) {
 		t.Helper()
@@ -37,14 +42,16 @@ func TestDBModeCursorProgressExact(t *testing.T) {
 	pool, err := pgxpool.New(ctx, "postgres://postgres:test@"+addr+"/postgres?sslmode=disable")
 	check(err)
 	t.Cleanup(pool.Close)
-	deadline := time.Now().Add(60 * time.Second)
+	deadline := time.Now().Add(90 * time.Second)
 	for {
-		_, ready := exec.Command("docker", "exec", id, "pg_isready", "-h", "127.0.0.1").CombinedOutput()
-		if ready == nil {
+		c, cancel := context.WithTimeout(ctx, time.Second)
+		err = pool.Ping(c)
+		cancel()
+		if err == nil {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("postgres did not become ready: %v", ready)
+			t.Fatalf("postgres did not become ready: %v", err)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}

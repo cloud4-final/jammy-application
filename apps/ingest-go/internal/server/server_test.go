@@ -34,7 +34,10 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-const protobuf = "application/x-protobuf"
+const (
+	protobuf        = "application/x-protobuf"
+	testRawMaxBytes = 4 << 20
+)
 
 func must[T any](t *testing.T, value T, err error) T {
 	t.Helper()
@@ -102,11 +105,14 @@ func receipt(t *testing.T, result *httptest.ResponseRecorder) server.Receipt {
 
 func docker(t *testing.T, args ...string) string {
 	t.Helper()
-	b, err := exec.Command("docker", args...).CombinedOutput()
-	if err != nil {
-		t.Fatalf("docker %v: %v: %s", args, err, b)
+	var stdout, stderr bytes.Buffer
+	cmd := exec.Command("docker", args...)
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("docker %v: %v: %s%s", args, err, stderr.String(), stdout.String())
 	}
-	return strings.TrimSpace(string(b))
+	return strings.TrimSpace(stdout.String())
 }
 
 func container(t *testing.T, port string, args ...string) (string, string) {
@@ -154,7 +160,7 @@ func stored(t *testing.T, js jetstream.JetStream, name string) *jetstream.RawStr
 }
 
 func TestValidBatch202AndInStream(t *testing.T) {
-	handler, js := stream(t, 60<<30)
+	handler, js := stream(t, testRawMaxBytes)
 	batch := sample()
 	before := time.Now().UnixMilli()
 	r := receipt(t, post(handler, marshal(t, batch), protobuf, ""))
@@ -168,7 +174,7 @@ func TestValidBatch202AndInStream(t *testing.T) {
 }
 
 func TestFullyValidBatchPassesBytesThrough(t *testing.T) {
-	handler, js := stream(t, 60<<30)
+	handler, js := stream(t, testRawMaxBytes)
 	body := compress(t, marshal(t, sample()))
 	receipt(t, post(handler, body, protobuf, "zstd"))
 	msg := stored(t, js, "raw-a1")
@@ -178,7 +184,7 @@ func TestFullyValidBatchPassesBytesThrough(t *testing.T) {
 }
 
 func TestPartialBatchReencodesValidOnly(t *testing.T) {
-	handler, js := stream(t, 60<<30)
+	handler, js := stream(t, testRawMaxBytes)
 	batch := sample()
 	batch.Events = append(batch.Events, &pb.Event{EventId: "event-2"})
 	input, err := protojson.Marshal(batch)
@@ -192,7 +198,7 @@ func TestPartialBatchReencodesValidOnly(t *testing.T) {
 }
 
 func TestRejectedGoToQuarantineWithReason(t *testing.T) {
-	handler, js := stream(t, 60<<30)
+	handler, js := stream(t, testRawMaxBytes)
 	batch := sample()
 	bad := &pb.Event{EventId: "invalid id"}
 	batch.Events = append(batch.Events, bad)
@@ -213,7 +219,7 @@ func TestRejectedGoToQuarantineWithReason(t *testing.T) {
 func TestDuplicateBatchIDSingleMessage(t *testing.T) {
 	for _, rejected := range []bool{false, true} {
 		t.Run(fmt.Sprint("all_rejected_", rejected), func(t *testing.T) {
-			handler, js := stream(t, 60<<30)
+			handler, js := stream(t, testRawMaxBytes)
 			batch := sample()
 			streamName := "raw-a1"
 			if rejected {
@@ -289,13 +295,14 @@ func TestInflightLimit429(t *testing.T) {
 }
 
 func TestDBModeCopiesRows(t *testing.T) {
-	id, addr := container(t, "5432", "-e", "POSTGRES_PASSWORD=test", "--tmpfs", "/var/lib/postgresql/data", "postgres:17.12-trixie")
+	_, addr := container(t, "5432", "-e", "POSTGRES_PASSWORD=test", "--tmpfs", "/var/lib/postgresql/data", "postgres:17.12-trixie")
 	p, err := pgxpool.New(t.Context(), "postgres://postgres:test@"+addr+"/postgres?sslmode=disable")
 	mustOK(t, err)
 	t.Cleanup(p.Close)
 	await(t, func() bool {
-		b, err := exec.Command("docker", "exec", id, "pg_isready", "-h", "127.0.0.1").CombinedOutput()
-		return err == nil && strings.Contains(string(b), "accepting connections")
+		c, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
+		return p.Ping(c) == nil
 	})
 	schema, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "contracts", "db", "migrations", "0001_init.up.sql"))
 	mustOK(t, err)
@@ -329,7 +336,7 @@ func TestNATSDownReadyzThenRecovers(t *testing.T) {
 	t.Cleanup(nc.Close)
 	js, err := jetstream.New(nc)
 	mustOK(t, err)
-	sink := sinkjs.New(js, nc.IsConnected, "raw-a1", 45*time.Minute, 60<<30)
+	sink := sinkjs.New(js, nc.IsConnected, "raw-a1", 45*time.Minute, testRawMaxBytes)
 	h := intake(t, sink, 1)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -349,7 +356,7 @@ func TestNATSDownReadyzThenRecovers(t *testing.T) {
 }
 
 func TestSigtermDrainsInflight(t *testing.T) {
-	_, js := stream(t, 60<<30)
+	_, js := stream(t, testRawMaxBytes)
 	root := filepath.Join("..", "..", "..", "..")
 	binary := filepath.Join(t.TempDir(), "ingest")
 	build := exec.Command("go", "build", "-o", binary, "./apps/ingest-go")
@@ -371,7 +378,7 @@ func TestSigtermDrainsInflight(t *testing.T) {
 	process.Env = append(os.Environ(),
 		"SITE_ID=test", "INSTANCE_ID=ingress-1", "INGEST_STREAM=raw-a1", "PIPELINE_MODE=jetstream",
 		fmt.Sprintf("HTTP_PORT=%d", httpPort), fmt.Sprintf("ADMIN_PORT=%d", adminPort),
-		"OTEL_EXPORTER_OTLP_ENDPOINT=", "INGEST_MAX_INFLIGHT=1",
+		"OTEL_EXPORTER_OTLP_ENDPOINT=", "INGEST_MAX_INFLIGHT=1", "JS_MAX_BYTES=4MiB",
 	)
 	var logs bytes.Buffer
 	process.Stdout, process.Stderr = &logs, &logs

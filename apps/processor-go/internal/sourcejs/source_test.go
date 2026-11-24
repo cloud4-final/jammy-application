@@ -1,6 +1,7 @@
 package sourcejs
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -30,11 +31,14 @@ func must(t *testing.T, err error) {
 
 func docker(t *testing.T, args ...string) string {
 	t.Helper()
-	output, err := exec.Command("docker", args...).CombinedOutput()
-	if err != nil {
-		t.Fatalf("docker %v: %v: %s", args, err, output)
+	var stdout, stderr bytes.Buffer
+	cmd := exec.Command("docker", args...)
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("docker %v: %v: %s%s", args, err, stderr.String(), stdout.String())
 	}
-	return strings.TrimSpace(string(output))
+	return strings.TrimSpace(stdout.String())
 }
 
 func launch(t *testing.T, port string, options ...string) string {
