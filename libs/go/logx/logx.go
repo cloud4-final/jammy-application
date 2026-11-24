@@ -9,9 +9,9 @@ import (
 	"slices"
 
 	"github.com/cloud4-final/jammy-5th/libs/go/config"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	otellog "go.opentelemetry.io/otel/log"
-	"go.opentelemetry.io/otel/log/global"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -40,7 +40,7 @@ func New(w io.Writer, service string, cfg config.Common) (*slog.Logger, error) {
 	}).WithAttrs([]slog.Attr{
 		slog.String("service", service), slog.String("instance", cfg.InstanceID), slog.String("site", cfg.SiteID),
 	})
-	return slog.New(handler{json: json, otlp: global.Logger(service)}), nil
+	return slog.New(handler{json: json, otlp: otel.Logger(service)}), nil
 }
 
 type handler struct {

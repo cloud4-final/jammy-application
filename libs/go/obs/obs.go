@@ -16,7 +16,6 @@ import (
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	otelprom "go.opentelemetry.io/otel/exporters/prometheus"
-	"go.opentelemetry.io/otel/log/global"
 	"go.opentelemetry.io/otel/metric"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -72,7 +71,7 @@ func Setup(service string, c config.Common) (metric.Meter, func(context.Context)
 			return nil, nil, errors.Join(err, metrics.Shutdown(ctx))
 		}
 		otel.SetTracerProvider(traces)
-		global.SetLoggerProvider(logs)
+		otel.SetLoggerProvider(logs)
 		shutdown = func(ctx context.Context) error {
 			return errors.Join(metrics.Shutdown(ctx), traces.Shutdown(ctx), logs.Shutdown(ctx))
 		}
