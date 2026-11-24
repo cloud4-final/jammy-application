@@ -16,10 +16,12 @@ from nats.js.api import StorageType
 from testcontainers.core.container import DockerContainer
 
 PROTOBUF = "application/x-protobuf"
+TEST_RAW_MAX_BYTES = "4MiB"
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def broker():
+    # JetStream reserves file storage per stream until the broker is torn down.
     container = (
         DockerContainer("nats:2.15.3")
         .with_command("--jetstream --store_dir /data")
@@ -61,7 +63,7 @@ async def post(client, item, *, zipped=False, json_body=False):
     return await client.post("/v1/batches", content=wire, headers=headers), wire
 
 
-def js_config(broker, monkeypatch, *, max_bytes="60GiB", max_age="45m"):
+def js_config(broker, monkeypatch, *, max_bytes=TEST_RAW_MAX_BYTES, max_age="45m"):
     monkeypatch.setenv("SITE_ID", "fixture")
     monkeypatch.setenv("INSTANCE_ID", "ingest-fixture")
     monkeypatch.setenv("NATS_URL", broker_url(broker))
@@ -72,7 +74,7 @@ def js_config(broker, monkeypatch, *, max_bytes="60GiB", max_age="45m"):
     return IngestConfig.from_env()
 
 
-async def js_case(broker, monkeypatch, check, *, max_bytes="60GiB"):
+async def js_case(broker, monkeypatch, check, *, max_bytes=TEST_RAW_MAX_BYTES):
     config = js_config(broker, monkeypatch, max_bytes=max_bytes)
     nc = await nats.connect(broker_url(broker), connect_timeout=1)
     try:
