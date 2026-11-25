@@ -196,7 +196,7 @@ const file_jammy_v1_envelope_proto_rawDesc = "" +
 	"\bbatch_id\x18\x01 \x01(\tR\abatchId\x12\x1f\n" +
 	"\vproducer_id\x18\x02 \x01(\tR\n" +
 	"producerId\x12'\n" +
-	"\x06events\x18\x03 \x03(\v2\x0f.jammy.v1.EventR\x06eventsB6Z4github.com/cloud4-final/jammy-5th/libs/go/pb/jammyv1b\x06proto3"
+	"\x06events\x18\x03 \x03(\v2\x0f.jammy.v1.EventR\x06eventsB>Z<github.com/cloud4-final/jammy-application/libs/go/pb/jammyv1b\x06proto3"
 
 var (
 	file_jammy_v1_envelope_proto_rawDescOnce sync.Once
