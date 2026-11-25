@@ -12,7 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/cloud4-final/jammy-5th/libs/go/obs"
+	"github.com/cloud4-final/jammy-application/libs/go/obs"
 )
 
 type Server struct {

@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"time"
 
-	pb "github.com/cloud4-final/jammy-5th/libs/go/pb/jammyv1"
+	pb "github.com/cloud4-final/jammy-application/libs/go/pb/jammyv1"
 	"google.golang.org/protobuf/proto"
 )
 
