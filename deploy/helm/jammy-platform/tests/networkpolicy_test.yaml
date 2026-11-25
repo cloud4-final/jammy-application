@@ -1,0 +1,24 @@
+suite: admin ingress policy
+templates:
+  - networkpolicy.yaml
+values:
+  - ../values-mvp.yaml
+  - site-values.yaml
+tests:
+  - it: permits admin scrapes only from the monitoring namespace
+    asserts:
+      - equal:
+          path: spec.ingress
+          value:
+            - ports: [{port: http, protocol: TCP}]
+            - from:
+                - namespaceSelector:
+                    matchLabels: {kubernetes.io/metadata.name: monitoring}
+              ports: [{port: admin, protocol: TCP}]
+  - it: permits a site to use its own monitoring namespace
+    set:
+      global.monitoringNamespace: jammy-obs
+    asserts:
+      - equal:
+          path: spec.ingress[1].from[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"]
+          value: jammy-obs
