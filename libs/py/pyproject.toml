@@ -1,0 +1,34 @@
+[project]
+name = "jammy-common"
+version = "0.1.0"
+requires-python = "==3.14.*"
+dependencies = [
+    "boto3==1.43.127",
+    "fastapi==0.141.1",
+    "nats-py[nkeys]==2.13.1",
+    "opentelemetry-api==1.45.2",
+    "opentelemetry-exporter-otlp==1.45.2",
+    "opentelemetry-exporter-prometheus==0.66b2",
+    "opentelemetry-sdk==1.45.2",
+    "prometheus-client==0.24.1",
+    "protobuf==7.36.2",
+    "psycopg[binary]==3.3.9",
+    "psycopg-pool==3.3.3",
+    "pydantic==2.13.5",
+    "uvicorn==0.52.4",
+]
+
+[build-system]
+requires = ["uv_build==0.12.24"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = ["zstandard==0.25.0"]
+
+[tool.uv.build-backend]
+module-root = ""
+module-name = "jammy_common"
+namespace = true
+
+[tool.ruff]
+extend-exclude = ["jammy_common/pb"]

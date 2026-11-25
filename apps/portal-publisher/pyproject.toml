@@ -1,0 +1,23 @@
+[project]
+name = "portal-publisher"
+version = "0.1.0"
+requires-python = "==3.14.*"
+dependencies = [
+    "boto3==1.43.127",
+    "jammy-common==0.1.0",
+    "psycopg[binary]==3.3.9",
+    "psycopg-pool==3.3.3",
+]
+
+[dependency-groups]
+dev = ["pytest==9.1.1", "testcontainers==4.14.2"]
+
+[tool.uv.sources]
+jammy-common = { workspace = true }
+
+[build-system]
+requires = ["uv_build==0.12.24"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+namespace = true
