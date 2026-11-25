@@ -1,0 +1,39 @@
+{{- with .Values.migrate }}
+{{- if .enabled }}
+{{- include "jammy.validateSecretEnv" (dict "service" "migrate" "env" .env) }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "jammy.name" (dict "root" $ "component" "migrate") }}
+  namespace: {{ include "jammy.namespace" $ }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      {{- include "jammy.podSettings" (dict "root" $ "app" . "nodeSelector" .nodeSelector) | nindent 6 }}
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: {{ include "jammy.image" (dict "root" $ "image" "migrate") | quote }}
+          command: ["/migrate-from-env"]
+          args: ["-path", "/migrations", "up"]
+          securityContext:
+            {{- include "jammy.security" $ | nindent 12 }}
+          resources:
+            {{- toYaml .resources | nindent 12 }}
+          env:
+            {{- range $key, $value := .env }}
+            - name: {{ $key }}
+              value: {{ $value | toString | quote }}
+            {{- end }}
+            {{- include "jammy.secretEnv" (dict "key" "DATABASE_URL" "global" $.Values.global) | nindent 12 }}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+{{- end }}
+{{- end }}

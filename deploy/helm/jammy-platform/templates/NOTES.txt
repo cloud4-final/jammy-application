@@ -1,0 +1,3 @@
+Check rollout in {{ include "jammy.namespace" . }} with:
+  kubectl -n {{ include "jammy.namespace" . }} get deployments,pods,services
+The admin endpoint on each pod exposes /livez, /readyz and /metrics on port {{ include "jammy.adminPort" . }}.

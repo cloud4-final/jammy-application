@@ -1,0 +1,7 @@
+{{- range $service := list "instruction-api" "dispatcher" "processor" "archiver" "portal-publisher" "plantsim" }}
+  {{- $app := index $.Values $service }}
+  {{- if $app.enabled }}
+---
+{{ include "jammy.workload" (dict "root" $ "service" $service "component" $service "app" $app "nodeSelector" $app.nodeSelector) }}
+  {{- end }}
+{{- end }}

@@ -1,0 +1,81 @@
+suite: ingest deployments
+templates:
+  - deployment-ingest.yaml
+values:
+  - ../values-split.yaml
+  - site-values.yaml
+tests:
+  - it: impl_go_selects_go_image
+    set:
+      ingest.impl: go
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: ghcr.io/cloud4-final/jammy-application/ingest-go:0.1.0-1234567
+  - it: split_renders_two_ingest_instances
+    asserts:
+      - hasDocuments:
+          count: 2
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: {name: INGEST_STREAM, value: raw-a1}
+        documentIndex: 0
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: {name: INGEST_STREAM, value: raw-a2}
+        documentIndex: 1
+  - it: security_context_hardened
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext.runAsNonRoot
+          value: true
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+          value: true
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.capabilities.drop
+          value: [ALL]
+  - it: probes_on_admin_port
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet
+          value: {path: /livez, port: 9090}
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet
+          value: {path: /readyz, port: 9090}
+  - it: rejects two replicas sharing an ingest stream
+    set:
+      ingest.replicas: 2
+    asserts:
+      - failedTemplate:
+          errorMessage: ingest.replicas must be 1 in jetstream mode
+  - it: no_latest_tag
+    set:
+      global.image.tag: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: global.image.tag is required
+  - it: rejects_latest_tag
+    set:
+      global.image.tag: latest
+    asserts:
+      - failedTemplate:
+          errorMessage: global.image.tag must be a version or version-sha7
+  - it: site_id_is_required
+    set:
+      global.siteId: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: global.siteId is required
+  - it: namespace_default_jammy
+    release:
+      namespace: default
+    asserts:
+      - equal:
+          path: metadata.namespace
+          value: jammy
+  - it: image_pull_secret_ghcr_pull
+    asserts:
+      - equal:
+          path: spec.template.spec.imagePullSecrets
+          value: [{name: ghcr-pull}]
