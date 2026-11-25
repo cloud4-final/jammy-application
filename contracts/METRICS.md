@@ -7,6 +7,7 @@ Services expose metrics at `/metrics` on the admin port. Site, instance and serv
 The OTel instrument `http.server.request.duration` is exposed as `http_server_request_duration_seconds`. Every `*_duration_seconds` histogram uses the same explicit boundaries in seconds: `0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10`.
 
 It carries the OTel semantic-convention attributes, exposed as labels `http_request_method` (e.g. `POST`, `GET`), `http_route` (the route template such as `/v1/instructions/{id}`, never the raw path) and `http_response_status_code` (e.g. `202`). The instruction receipt SLO uses `http_route="/v1/instructions", http_request_method="POST"`.
+The retired collector metric `http_requests_total` is not emitted; `http_server_request_duration_seconds` replaces it.
 
 ## Service metrics
 
