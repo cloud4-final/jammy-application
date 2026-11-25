@@ -1,0 +1,15 @@
+.git
+**/.env
+deploy/compose/.local-hmac-keys.json*
+docs/measurements/raw
+**/.review
+**/.agent
+**/node_modules
+**/.cache
+**/.mypy_cache
+**/.pytest_cache
+**/.ruff_cache
+**/__pycache__
+**/.uv-cache
+**/.venv
+**/*.log

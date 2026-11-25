@@ -1,0 +1,18 @@
+suite: split control path
+templates:
+  - deployment-app.yaml
+values:
+  - ../values-split.yaml
+  - site-values.yaml
+tests:
+  - it: dispatcher_split_two_replicas_antiaffinity
+    documentSelector:
+      path: metadata.labels["app.kubernetes.io/component"]
+      value: dispatcher
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 2
+      - equal:
+          path: spec.template.spec.affinity.podAntiAffinity.requiredDuringSchedulingIgnoredDuringExecution[0].topologyKey
+          value: kubernetes.io/hostname

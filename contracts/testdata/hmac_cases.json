@@ -1,0 +1,47 @@
+[
+  {
+    "key_id": "key-a",
+    "secret": "fixture-secret",
+    "timestamp": 1795392000,
+    "method": "POST",
+    "path": "/v1/instructions",
+    "body": "{\"instruction_id\":\"demo-1\",\"target_reduction_kw\":\"12.500\",\"valid_from\":\"2026-11-23T01:00:00Z\",\"valid_until\":\"2026-11-23T02:00:00Z\"}",
+    "expected_signature": "3b482b070f8ae8370f12b0f2cf33f516b3d122ff94de657246112fd85c4c9545"
+  },
+  {
+    "key_id": "key-a",
+    "secret": "fixture-secret",
+    "timestamp": 1795392000,
+    "method": "POST",
+    "path": "/v1/instructions",
+    "body": "{ \"instruction_id\": \"demo-1\", \"target_reduction_kw\": \"12.500\", \"valid_from\": \"2026-11-23T01:00:00Z\", \"valid_until\": \"2026-11-23T02:00:00Z\" }\n",
+    "expected_signature": "e6238069716488a2882fcb43fcea2a598a1d56d6709d3154d5d26fbc75180cc7"
+  },
+  {
+    "key_id": "key-a",
+    "secret": "fixture-secret",
+    "timestamp": 1795392001,
+    "method": "GET",
+    "path": "/v1/instructions/demo-1",
+    "body": "",
+    "expected_signature": "d70420ffef17a9a40a04478a01304ec219a58008b7cf08fbc1752a6389aadfa4"
+  },
+  {
+    "key_id": "key-b",
+    "secret": "another-fixture-secret",
+    "timestamp": 1795392001,
+    "method": "GET",
+    "path": "/v1/instructions/demo-1",
+    "body": "",
+    "expected_signature": "bf93c8bb6c3a7fd9d1e93c851040dfcbdfcd7070eca793aa1e39c39322f38408"
+  },
+  {
+    "key_id": "key-b",
+    "secret": "another-fixture-secret",
+    "timestamp": 1795392002,
+    "method": "POST",
+    "path": "/v1/instructions",
+    "body": "{\"instruction_id\":\"지시-2\",\"target_reduction_kw\":\"0.001\",\"valid_from\":\"2026-11-23T01:00:00Z\",\"valid_until\":\"2026-11-23T02:00:00Z\"}",
+    "expected_signature": "93ca3a6c6fba07efe2d052ef16dc951fbca807dafc6387c6365ba1a1269abe73"
+  }
+]

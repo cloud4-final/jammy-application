@@ -1,0 +1,520 @@
+name: backend
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  changes:
+    name: Detect backend changes
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: read # List changed files through the pull request API.
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      paths: ${{ steps.filter.outputs.changes }}
+      services: ${{ steps.services.outputs.services }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Discover service Dockerfiles
+        id: services
+        run: |
+          services=$(
+            for spec in \
+              instruction-api:apps/instruction-api/Dockerfile \
+              dispatcher:apps/dispatcher/Dockerfile \
+              portal-publisher:apps/portal-publisher/Dockerfile \
+              ingest-go:apps/ingest-go/Dockerfile \
+              ingest-py:apps/ingest-py/Dockerfile \
+              processor-go:apps/processor-go/Dockerfile \
+              processor-py:apps/processor-py/Dockerfile \
+              archiver-go:apps/archiver-go/Dockerfile \
+              archiver-py:apps/archiver-py/Dockerfile \
+              migrate:apps/migrate/Dockerfile \
+              plantsim:tools/plantsim/Dockerfile; do
+              service=${spec%%:*}
+              dockerfile=${spec#*:}
+              if [[ -f "$dockerfile" ]]; then
+                jq -cn --arg service "$service" --arg dockerfile "$dockerfile" \
+                  '{service: $service, dockerfile: $dockerfile}'
+              fi
+            done | jq -cs '.'
+          )
+          printf 'services=%s\n' "$services" >> "$GITHUB_OUTPUT"
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          filters: |
+            backend:
+              - 'apps/**'
+              - 'libs/**'
+              - 'tools/**'
+              - 'contracts/**'
+              - 'deploy/**'
+              - 'observability/**'
+              - 'loadtest/**'
+              - 'tests/e2e/**'
+              - 'scripts/**'
+              - 'docs/backend/VERSIONS.md'
+              - 'Makefile'
+              - 'buf*.yaml'
+              - 'go.*'
+              - 'pyproject.toml'
+              - 'uv.lock'
+              - '.dockerignore'
+              - '.github/tests/**'
+              - '.github/workflows/backend.yml'
+            shared:
+              - 'libs/**'
+              - 'contracts/**'
+              - 'Makefile'
+              - 'buf*.yaml'
+              - 'go.*'
+              - 'pyproject.toml'
+              - 'uv.lock'
+              - 'scripts/image-tag.sh'
+              - 'scripts/tests/test_image_tag.sh'
+              - 'docs/backend/VERSIONS.md'
+              - '.dockerignore'
+              - '.github/workflows/backend.yml'
+            instruction-api: 'apps/instruction-api/**'
+            dispatcher: 'apps/dispatcher/**'
+            portal-publisher: 'apps/portal-publisher/**'
+            ingest-go: 'apps/ingest-go/**'
+            ingest-py: 'apps/ingest-py/**'
+            processor-go: 'apps/processor-go/**'
+            processor-py: 'apps/processor-py/**'
+            archiver-go: 'apps/archiver-go/**'
+            archiver-py: 'apps/archiver-py/**'
+            migrate: 'apps/migrate/**'
+            plantsim: 'tools/plantsim/**'
+            delivery-scripts:
+              - 'deploy/compose/aws/**'
+              - 'scripts/**'
+
+  contracts:
+    name: Check contracts, workflows, and image tags
+    if: needs.changes.outputs.backend == 'true'
+    needs: changes
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version: '1.27.4'
+      - name: Lint backend workflow
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/backend.yml
+      - name: Test generated Protobuf drift detection
+        run: bash .github/tests/test_proto_check.sh
+      - name: Test Docker build context secret exclusions
+        run: bash .github/tests/test_dockerignore.sh
+      - run: make contracts-check
+        env:
+          PROTO_BASE: ${{ github.event_name == 'push' && github.event.before || 'origin/main' }}
+      - name: Test image tag script
+        run: |
+          if [[ -f scripts/tests/test_image_tag.sh ]]; then
+            scripts/tests/test_image_tag.sh
+          fi
+      - name: Check dashboards and Alloy configuration
+        run: |
+          if [[ -f observability/dashboards/check.sh ]]; then
+            bash observability/dashboards/check.sh
+          fi
+
+  py:
+    name: Python / ${{ matrix.scope || matrix.package }}
+    needs: [changes, contracts]
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {package: jammy-common, dir: libs/py}
+          - {package: instruction-api, dir: apps/instruction-api}
+          - {package: dispatcher, dir: apps/dispatcher}
+          - {package: portal-publisher, dir: apps/portal-publisher}
+          - {package: ingest-py, dir: apps/ingest-py}
+          - {package: processor-py, dir: apps/processor-py}
+          - {package: archiver-py, dir: apps/archiver-py}
+          - {package: dispatcher, dir: deploy/compose/aws, scope: delivery-scripts}
+    env:
+      PACKAGE: ${{ matrix.package }}
+      PACKAGE_DIR: ${{ matrix.dir }}
+      SCOPE: ${{ matrix.scope || matrix.package }}
+      SHOULD_TEST: ${{ github.event_name == 'push' ||
+        contains(fromJSON(needs.changes.outputs.paths), 'shared') ||
+        contains(fromJSON(needs.changes.outputs.paths), matrix.scope || matrix.package) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: env.SHOULD_TEST == 'true'
+        with:
+          persist-credentials: false
+      - name: Check package presence
+        id: check
+        if: env.SHOULD_TEST == 'true'
+        run: |
+          if [[ -f "$PACKAGE_DIR/pyproject.toml" || ( "$SCOPE" == delivery-scripts && -d "$PACKAGE_DIR" ) ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        if: steps.check.outputs.run == 'true'
+        with:
+          python-version: '3.14.10'
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        if: steps.check.outputs.run == 'true'
+        with:
+          version: '0.12.24'
+      - name: Lint and test
+        if: steps.check.outputs.run == 'true'
+        run: |
+          paths=("$PACKAGE_DIR")
+          if [[ "$SCOPE" == delivery-scripts ]]; then
+            paths+=(scripts)
+          fi
+          lock_flag=--locked
+          for member_dir in libs/py apps/instruction-api apps/dispatcher apps/portal-publisher apps/ingest-py apps/processor-py apps/archiver-py tests/e2e; do
+            if [[ ! -f "$member_dir/pyproject.toml" ]]; then
+              lock_flag=--frozen
+              break
+            fi
+          done
+          uvx --python 3.14.10 ruff@0.16.10 check --target-version py314 "${paths[@]}"
+          uv run "$lock_flag" --python 3.14.10 --package "$PACKAGE" \
+            --with pytest==9.1.1 --with testcontainers==4.14.2 --with httpx==0.28.1 \
+            pytest "${paths[@]}"
+
+  go:
+    name: Lint and test Go
+    needs: py
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version: '1.27.4'
+      - name: Check Go packages
+        id: check
+        run: |
+          pkgs=$(go list ./...)
+          if [[ -n "$pkgs" ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Lint
+        if: steps.check.outputs.run == 'true'
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
+          "$(go env GOPATH)/bin/golangci-lint" run ./...
+      - if: steps.check.outputs.run == 'true'
+        run: go test -race ./...
+
+  helm:
+    name: Test Helm chart
+    needs: go
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check Helm chart presence
+        id: check
+        run: |
+          if [[ -f deploy/helm/jammy-platform/Chart.yaml ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        if: steps.check.outputs.run == 'true'
+        with:
+          version: v4.3.2
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        if: steps.check.outputs.run == 'true'
+        with:
+          go-version: '1.27.4'
+      - name: Install pinned Helm test tools
+        if: steps.check.outputs.run == 'true'
+        run: |
+          cd "$RUNNER_TEMP"
+          base=https://github.com/helm-unittest/helm-unittest/releases/download/v1.1.2
+          archive=helm-unittest-linux-amd64-1.1.2.tgz
+          curl --fail --silent --show-error --location --remote-name "$base/$archive"
+          curl --fail --silent --show-error --location --remote-name "$base/helm-unittest-checksum.sha"
+          awk -v archive="$archive" '$2 == "*./_dist/" archive {print $1 "  " archive}' \
+            helm-unittest-checksum.sha | sha256sum --check -
+          export HELM_PLUGINS="$RUNNER_TEMP/helm-plugins"
+          mkdir -p "$HELM_PLUGINS/unittest"
+          tar -xzf "$archive" -C "$HELM_PLUGINS/unittest"
+          printf 'HELM_PLUGINS=%s\n' "$HELM_PLUGINS" >> "$GITHUB_ENV"
+          go install github.com/yannh/kubeconform/cmd/kubeconform@v0.6.7
+          printf '%s\n' "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - if: steps.check.outputs.run == 'true'
+        run: make helm-test
+
+  images:
+    name: Build and scan / ${{ matrix.service }}
+    if: needs.changes.outputs.backend == 'true' && needs.changes.outputs.services != '[]'
+    needs: [changes, helm]
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.changes.outputs.services) }}
+    env:
+      SERVICE: ${{ matrix.service }}
+      IMAGE: ghcr.io/${{ github.repository }}/${{ matrix.service }}
+      SELECTED: ${{ github.event_name == 'push' ||
+        contains(fromJSON(needs.changes.outputs.paths), 'shared') ||
+        contains(fromJSON(needs.changes.outputs.paths), matrix.service) }}
+      RELEASE_BUILD: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+        github.repository == 'cloud4-final/jammy-application' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check service Dockerfile presence
+        id: check
+        if: env.SELECTED == 'true'
+        run: |
+          if [[ -f "${{ matrix.dockerfile }}" ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Set image version and build timestamp
+        if: steps.check.outputs.run == 'true'
+        id: input
+        run: |
+          tags=$(scripts/image-tag.sh)
+          printf '%s\n' "$tags" > "$RUNNER_TEMP/image-tags.txt"
+          printf 'primary=%s\n' "${tags%%$'\n'*}" >> "$GITHUB_OUTPUT"
+          printf 'SOURCE_DATE_EPOCH=%s\n' "$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        if: steps.check.outputs.run == 'true'
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        if: steps.check.outputs.run == 'true'
+      - name: Build both platforms locally
+        if: steps.check.outputs.run == 'true'
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          outputs: type=oci,dest=${{ runner.temp }}/image,tar=false,rewrite-timestamp=true
+          build-args: |
+            SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
+            IMAGE_VERSION=${{ steps.input.outputs.primary }}
+            IMAGE_REVISION=${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,scope=${{ matrix.service }},mode=max
+          provenance: ${{ env.RELEASE_BUILD == 'true' && 'mode=min' || 'false' }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/cloud4-final/jammy-application
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.input.outputs.primary }}
+      - name: Select each built platform for scanning
+        if: steps.check.outputs.run == 'true'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          image_dir="$RUNNER_TEMP/image"
+          jq -e --arg digest "$DIGEST" \
+            'any(.manifests[]; .digest == $digest and .mediaType == "application/vnd.oci.image.index.v1+json")' \
+            "$image_dir/index.json" >/dev/null
+          for arch in amd64 arm64; do
+            scan_dir="$RUNNER_TEMP/scan-$arch"
+            mkdir "$scan_dir"
+            cp "$image_dir/oci-layout" "$scan_dir/"
+            ln -s "$image_dir/blobs" "$scan_dir/blobs"
+            jq --arg arch "$arch" '
+              .manifests |= map(select(.platform.os == "linux" and .platform.architecture == $arch))
+              | if (.manifests | length) == 1 then . else error("expected one linux/" + $arch + " image") end
+            ' "$image_dir/blobs/sha256/${DIGEST#sha256:}" > "$scan_dir/index.json"
+          done
+      - name: Smoke-test the native image
+        if: steps.check.outputs.run == 'true'
+        run: |
+          case "$(uname -m)" in
+            x86_64) arch=amd64 ;;
+            aarch64) arch=arm64 ;;
+            *) echo "Unsupported runner architecture" >&2; exit 1 ;;
+          esac
+          image="$IMAGE:ci"
+          skopeo copy "oci:$RUNNER_TEMP/scan-$arch" "docker-daemon:$image"
+          trap 'docker rm -f jammy-smoke >/dev/null 2>&1 || true' EXIT
+
+          case "$SERVICE" in
+            plantsim)
+              docker run --detach --name jammy-smoke --env SITE_ID=ci \
+                --publish 127.0.0.1::9090 "$image"
+              address=$(docker port jammy-smoke 9090/tcp)
+              curl --fail --silent --show-error --max-time 2 --retry 15 \
+                --retry-connrefused --retry-delay 1 "http://$address/livez" \
+                || { docker logs jammy-smoke; exit 1; }
+              exit 0
+              ;;
+            migrate)
+              timeout 30s docker run --name jammy-smoke --network none "$image" -version
+              exit 0
+              ;;
+            instruction-api|dispatcher|portal-publisher|ingest-go|ingest-py|processor-go|processor-py|archiver-go|archiver-py)
+              ;;
+            *) echo "Smoke test missing for $SERVICE" >&2; exit 1 ;;
+          esac
+
+          # Required settings are documented in contracts/ENV.md.
+          status=0
+          timeout 30s docker run --name jammy-smoke --network none --env SITE_ID=ci \
+            "$image" >"$RUNNER_TEMP/smoke.log" 2>&1 || status=$?
+          cat "$RUNNER_TEMP/smoke.log"
+          [[ $status == 1 ]]
+          mapfile -t smoke_lines < "$RUNNER_TEMP/smoke.log"
+          [[ ${#smoke_lines[@]} == 1 ]]
+          [[ ${smoke_lines[0]} =~ ^([A-Z0-9_]+\ is\ required|invalid\ [A-Z0-9_]+(:.*)?)$ ]]
+      # Unfixed findings cannot be remediated by a version bump. See
+      # docs/backend/VERSIONS.md for the tracked exceptions and scan policy.
+      - name: Scan linux/amd64
+        if: steps.check.outputs.run == 'true'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.76.2
+          input: ${{ runner.temp }}/scan-amd64
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+      - name: Scan linux/arm64
+        if: steps.check.outputs.run == 'true'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.76.2
+          skip-setup-trivy: true
+          input: ${{ runner.temp }}/scan-arm64
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+      - name: Publish linux/amd64 SPDX SBOM as a workflow artifact
+        if: steps.check.outputs.run == 'true'
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          image: oci-dir:${{ runner.temp }}/scan-amd64
+          syft-version: v1.51.1
+          format: spdx-json
+          artifact-name: ${{ matrix.service }}-linux-amd64.spdx.json
+          upload-release-assets: false
+      - name: Publish linux/arm64 SPDX SBOM as a workflow artifact
+        if: steps.check.outputs.run == 'true'
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          image: oci-dir:${{ runner.temp }}/scan-arm64
+          syft-version: v1.51.1
+          format: spdx-json
+          artifact-name: ${{ matrix.service }}-linux-arm64.spdx.json
+          upload-release-assets: false
+      - name: Package scanned OCI index and BuildKit provenance
+        if: steps.check.outputs.run == 'true' && env.RELEASE_BUILD == 'true'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          image_dir="$RUNNER_TEMP/image"
+          # Check that each scanned platform has an attached provenance manifest.
+          jq -e '
+            .manifests as $manifests
+            | all($manifests[] | select(.platform.os == "linux"); .digest as $digest
+              | any($manifests[]; .annotations["vnd.docker.reference.digest"] == $digest
+                and .annotations["vnd.docker.reference.type"] == "attestation-manifest"))
+          ' "$image_dir/blobs/sha256/${DIGEST#sha256:}" >/dev/null
+          tar -C "$image_dir" -cf "$RUNNER_TEMP/image.tar" .
+      - name: Pass scanned image to the publish job
+        if: steps.check.outputs.run == 'true' && env.RELEASE_BUILD == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: image-${{ matrix.service }}
+          path: |
+            ${{ runner.temp }}/image.tar
+            ${{ runner.temp }}/image-tags.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+          overwrite: true
+
+  publish:
+    name: Publish and sign / ${{ matrix.service }}
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      github.repository == 'cloud4-final/jammy-application' &&
+      needs.changes.outputs.services != '[]'
+    needs: [changes, images]
+    runs-on: ubuntu-24.04
+    permissions:
+      packages: write # Push the scanned image and its Cosign signature to GHCR.
+      id-token: write # Request the GitHub OIDC identity for keyless Cosign signing.
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.changes.outputs.services) }}
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}/${{ matrix.service }}
+    steps:
+      - name: Download the scanned image from this run
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: image-${{ matrix.service }}
+          path: ${{ runner.temp }}/scanned-image
+      - uses: docker/login-action@371161bbe7024a29a25c5e19bfcbc0804fe9ad2c # v4.5.2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+        with:
+          cosign-release: v3.1.4
+      - name: Push the scanned OCI index with provenance and sign its digest
+        run: |
+          image_dir="$RUNNER_TEMP/image"
+          mkdir "$image_dir"
+          tar -xf "$RUNNER_TEMP/scanned-image/image.tar" -C "$image_dir"
+          digest=$(jq -er '
+            if (.manifests | length) == 1
+              and .manifests[0].mediaType == "application/vnd.oci.image.index.v1+json"
+            then .manifests[0].digest else error("expected one OCI index") end
+          ' "$image_dir/index.json")
+          primary=$(head -n 1 "$RUNNER_TEMP/scanned-image/image-tags.txt")
+          release=$(sed -n '2p' "$RUNNER_TEMP/scanned-image/image-tags.txt")
+          # Cosign's layout reader locates the index through this descriptor annotation.
+          jq --arg digest "$digest" '
+            .manifests[] |=
+              if .digest == $digest then .annotations.kind = "dev.cosignproject.cosign/imageIndex" else . end
+          ' "$image_dir/index.json" > "$image_dir/index.cosign.json"
+          mv "$image_dir/index.cosign.json" "$image_dir/index.json"
+          cosign --timeout=10m load --dir "$image_dir" "$IMAGE:$primary"
+          cosign sign --yes "$IMAGE@$digest"
+          if [[ -n $release ]]; then
+            docker buildx imagetools create --tag "$IMAGE:$release" "$IMAGE@$digest"
+          fi

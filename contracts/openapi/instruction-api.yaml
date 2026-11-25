@@ -1,0 +1,229 @@
+openapi: 3.1.0
+info:
+  title: JAMMY Instruction API
+  version: '1.0.0'
+servers:
+  - url: /
+security:
+  - JammyKeyId: []
+    JammyTimestamp: []
+    JammySignature: []
+paths:
+  /v1/instructions:
+    post:
+      operationId: submitInstruction
+      summary: Submit an instruction
+      description: >-
+        Sign the exact request body. The signing input is the Unix timestamp in
+        seconds, the HTTP method, the URL path, and the lowercase hexadecimal
+        SHA-256 of the body, joined with newline characters. The signature is
+        the hexadecimal HMAC-SHA256 of that input. The allowed clock skew is
+        ±300 seconds. The key ID selects the secret in HMAC_KEYS_FILE.
+      parameters:
+        - name: X-Jammy-Lease-Epoch
+          in: header
+          required: false
+          description: >-
+            Optional lease epoch recorded on a new instruction. Use decimal digits.
+            The API rejects an epoch below the local site's recorded lease epoch.
+            This header is excluded from the signing input.
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+            maximum: 9223372036854775807
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InstructionRequest'
+      responses:
+        '202':
+          description: A new instruction was accepted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InstructionReceipt'
+        '200':
+          description: The same instruction ID and exact body were already received.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InstructionReceipt'
+        '401':
+          description: bad_signature, stale_timestamp, or unknown_key.
+          content: &problemContent
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '400':
+          description: bad_request. The X-Jammy-Lease-Epoch header is malformed.
+          content: *problemContent
+        '409':
+          description: >-
+            conflict if this instruction ID is already associated with a different body,
+            or stale_epoch if the header is below the local site lease epoch.
+          content: *problemContent
+        '413':
+          description: payload_too_large. The request body exceeds INSTRUCTION_MAX_BODY_BYTES.
+          content: *problemContent
+        '422':
+          description: invalid_body.
+          content: *problemContent
+        default:
+          description: Request failed.
+          content: *problemContent
+  /v1/instructions/{id}:
+    get:
+      operationId: getInstruction
+      summary: Get the instruction and its command statuses
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The instruction and its current command statuses.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InstructionDetail'
+        '401':
+          description: bad_signature, stale_timestamp, or unknown_key.
+          content: *problemContent
+        '404':
+          description: not_found. The instruction ID does not exist.
+          content: *problemContent
+        default:
+          description: Request failed.
+          content: *problemContent
+components:
+  securitySchemes:
+    JammyKeyId:
+      type: apiKey
+      in: header
+      name: X-Jammy-Key-Id
+    JammyTimestamp:
+      type: apiKey
+      in: header
+      name: X-Jammy-Timestamp
+      description: Unix time in seconds.
+    JammySignature:
+      type: apiKey
+      in: header
+      name: X-Jammy-Signature
+  schemas:
+    InstructionRequest:
+      type: object
+      required: [instruction_id, target_reduction_kw, valid_from, valid_until]
+      properties:
+        instruction_id:
+          type: string
+        target_reduction_kw:
+          $ref: '#/components/schemas/PositiveKilowatts'
+        valid_from:
+          type: string
+          format: date-time
+        valid_until:
+          type: string
+          format: date-time
+          description: Must be later than valid_from.
+        routing_keys:
+          type: array
+          description: When omitted, targets all solar assets.
+          items:
+            type: string
+    PositiveKilowatts:
+      type: string
+      pattern: '^(?!0\.000$)(0|[1-9][0-9]{0,10})\.[0-9]{3}$'
+      description: A positive decimal string with exactly three fractional digits.
+      examples: ['12.500']
+    InstructionStatus:
+      type: string
+      enum: [accepted, dispatching, dispatched, partially_dispatched, expired]
+    InstructionReceipt:
+      type: object
+      required: [instruction_id, status, received_at]
+      properties:
+        instruction_id:
+          type: string
+        status:
+          $ref: '#/components/schemas/InstructionStatus'
+        received_at:
+          type: string
+          format: date-time
+    InstructionDetail:
+      allOf:
+        - $ref: '#/components/schemas/InstructionReceipt'
+        - type: object
+          required: [target_reduction_kw, valid_from, valid_until, commands]
+          properties:
+            target_reduction_kw:
+              $ref: '#/components/schemas/PositiveKilowatts'
+            valid_from:
+              type: string
+              format: date-time
+            valid_until:
+              type: string
+              format: date-time
+            commands:
+              type: array
+              items:
+                $ref: '#/components/schemas/CommandStatus'
+    CommandStatus:
+      type: object
+      required: [command_id, asset_id, reduction_kw, status, generation, epoch, sent_at, acked_at]
+      properties:
+        command_id:
+          type: string
+          format: uuid
+        asset_id:
+          type: string
+        reduction_kw:
+          $ref: '#/components/schemas/PositiveKilowatts'
+        status:
+          type: string
+          enum: [pending, acked, stale_epoch, timeout, error]
+        generation:
+          type: integer
+          format: int64
+        epoch:
+          type: integer
+          format: int64
+        sent_at:
+          type: [string, 'null']
+          format: date-time
+        acked_at:
+          type: [string, 'null']
+          format: date-time
+    Problem:
+      type: object
+      description: RFC 9457 Problem Details.
+      required: [type, title, status, detail]
+      properties:
+        type:
+          type: string
+          format: uri
+          enum:
+            - https://jammy.dev/problems/bad_signature
+            - https://jammy.dev/problems/stale_timestamp
+            - https://jammy.dev/problems/unknown_key
+            - https://jammy.dev/problems/invalid_body
+            - https://jammy.dev/problems/conflict
+            - https://jammy.dev/problems/stale_epoch
+            - https://jammy.dev/problems/not_found
+            - https://jammy.dev/problems/payload_too_large
+            - https://jammy.dev/problems/bad_request
+            - https://jammy.dev/problems/too_many_requests
+            - https://jammy.dev/problems/unavailable
+        title:
+          type: string
+        status:
+          type: integer
+          minimum: 400
+          maximum: 599
+        detail:
+          type: string

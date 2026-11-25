@@ -1,0 +1,7 @@
+version: v2
+plugins:
+  - remote: buf.build/protocolbuffers/go:v1.36.12
+    out: .
+    opt: module=github.com/cloud4-final/jammy-application
+  - remote: buf.build/protocolbuffers/python:v36.2
+    out: libs/py/jammy_common/pb

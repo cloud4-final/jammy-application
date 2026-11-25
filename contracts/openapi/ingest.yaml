@@ -1,0 +1,183 @@
+openapi: 3.1.0
+info:
+  title: JAMMY Ingest API
+  version: '1.0.0'
+servers:
+  - url: /
+security: []
+paths:
+  /v1/batches:
+    post:
+      operationId: ingestBatch
+      summary: Store a batch of events
+      description: >-
+        The batch is an EventBatch message from envelope.proto. The response is
+        sent after JetStream PubAck or PostgreSQL commit. A batch with no accepted
+        events still returns 202. Replays of a stored batch_id also return 202.
+      parameters:
+        - name: Content-Encoding
+          in: header
+          description: When omitted the body is uncompressed.
+          schema:
+            type: string
+            enum: [zstd]
+      requestBody:
+        required: true
+        content:
+          application/x-protobuf:
+            schema:
+              type: string
+              format: binary
+              description: Protobuf encoding of EventBatch.
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EventBatch'
+      responses:
+        '202':
+          description: The batch was processed or identified as a replay.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchReceipt'
+        '400':
+          description: >-
+            bad_request. The batch could not be decoded or failed batch-level
+            validation, including any JSON object that uses both spellings of
+            the same field.
+          content: &problemContent
+            application/problem+json:
+              schema:
+                $ref: './instruction-api.yaml#/components/schemas/Problem'
+        '413':
+          description: payload_too_large. The wire or decompressed size exceeded its limit.
+          content: *problemContent
+        '429':
+          description: too_many_requests. The inflight request limit was reached.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                const: 1
+          content: *problemContent
+        '503':
+          description: unavailable. The destination could not store the batch.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                const: 2
+          content: *problemContent
+        default:
+          description: Request failed.
+          content: *problemContent
+components:
+  schemas:
+    EventBatch:
+      type: object
+      additionalProperties: false
+      description: >-
+        Standard ProtoJSON. Either lowerCamelCase or snake_case field names
+        are accepted. Using both spellings of any field within the same batch
+        or event object returns HTTP 400.
+      properties:
+        batchId: &batchId
+          type: string
+          pattern: '^[A-Za-z0-9._:-]{1,128}$'
+        batch_id: *batchId
+        producerId: &producerId
+          type: string
+          pattern: '^[A-Za-z0-9._:-]{0,128}$'
+        producer_id: *producerId
+        events:
+          type: array
+          minItems: 1
+          maxItems: 10000
+          items:
+            $ref: '#/components/schemas/Event'
+      allOf:
+        - oneOf:
+            - required: [batchId]
+            - required: [batch_id]
+        - required: [events]
+      dependentSchemas:
+        producerId:
+          propertyNames:
+            not:
+              const: producer_id
+    Event:
+      type: object
+      additionalProperties: false
+      description: Event-level gate failures are reported in the batch receipt.
+      properties:
+        eventId: &eventId
+          type: string
+        event_id: *eventId
+        routingKey: &routingKey
+          type: string
+        routing_key: *routingKey
+        profile:
+          type: string
+        schemaVersion: &schemaVersion
+          description: ProtoJSON uint32.
+          type: [integer, string]
+        schema_version: *schemaVersion
+        eventTimeUnixMs: &eventTime
+          description: ProtoJSON int64 in milliseconds.
+          type: [integer, string]
+        event_time_unix_ms: *eventTime
+        payload:
+          type: string
+          contentEncoding: base64
+          description: Protobuf-encoded profile message.
+        attrs:
+          type: object
+          additionalProperties:
+            type: string
+      dependentSchemas:
+        eventId:
+          propertyNames:
+            not:
+              const: event_id
+        routingKey:
+          propertyNames:
+            not:
+              const: routing_key
+        schemaVersion:
+          propertyNames:
+            not:
+              const: schema_version
+        eventTimeUnixMs:
+          propertyNames:
+            not:
+              const: event_time_unix_ms
+    BatchReceipt:
+      type: object
+      required: [batch_id, accepted, rejected, reasons, duplicate]
+      properties:
+        batch_id: *batchId
+        accepted:
+          type: integer
+          minimum: 0
+        rejected:
+          type: integer
+          minimum: 0
+        reasons:
+          type: object
+          description: Rejected event counts by reason code.
+          propertyNames:
+            enum:
+              - bad_event_id
+              - bad_routing_key
+              - unknown_profile
+              - unsupported_version
+              - bad_event_time
+              - bad_payload
+              - out_of_range
+              - duplicate_in_batch
+              - bad_attrs
+          additionalProperties:
+            type: integer
+            minimum: 1
+        duplicate:
+          type: boolean
+          description: True for a replay, which has accepted and rejected counts of zero. False otherwise.

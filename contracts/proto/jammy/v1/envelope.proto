@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package jammy.v1;
+
+option go_package = "github.com/cloud4-final/jammy-application/libs/go/pb/jammyv1";
+
+message Event {
+  string event_id = 1; // 1–128 bytes, [A-Za-z0-9._:-].
+  string routing_key = 2; // Same format as event_id.
+  string profile = 3; // solar, synth-small, or synth-large.
+  uint32 schema_version = 4; // Currently 1 for all profiles.
+  int64 event_time_unix_ms = 5;
+  bytes payload = 6; // Protobuf-encoded profile message.
+  map<string, string> attrs = 7; // At most 16 entries and 64 bytes per key or value.
+}
+
+message EventBatch {
+  string batch_id = 1; // Same format as event_id.
+  string producer_id = 2; // Same format as event_id, or empty.
+  repeated Event events = 3; // 1–10,000 events.
+}

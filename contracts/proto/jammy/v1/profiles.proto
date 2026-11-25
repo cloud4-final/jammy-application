@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package jammy.v1;
+
+option go_package = "github.com/cloud4-final/jammy-application/libs/go/pb/jammyv1";
+
+enum Status {
+  STATUS_UNSPECIFIED = 0;
+  STATUS_OK = 1;
+  STATUS_DEGRADED = 2;
+  STATUS_OFFLINE = 3;
+}
+
+message SolarReading {
+  string asset_id = 1; // Must equal the event routing_key.
+  double power_kw = 2; // [0, 100000]. Primary value.
+  double irradiance_wm2 = 3; // [0, 1500].
+  double temperature_c = 4; // [-40, 90].
+  Status status = 5; // Must be OK, DEGRADED, or OFFLINE.
+}
+
+message SynthSmall {
+  double value = 1; // Finite primary value.
+  bytes pad = 2; // At most 256 bytes.
+}
+
+message SynthLarge {
+  double value = 1; // Finite primary value.
+  bytes blob = 2; // At most 65536 bytes.
+}
