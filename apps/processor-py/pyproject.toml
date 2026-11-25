@@ -1,0 +1,22 @@
+[project]
+name = "processor-py"
+version = "0.1.0"
+requires-python = "==3.14.*"
+dependencies = ["jammy-common"]
+
+[project.scripts]
+jammy-processor = "processor.main:main"
+
+[dependency-groups]
+dev = ["httpx==0.28.1", "pytest==9.1.1", "testcontainers[postgres]==4.14.2"]
+
+[tool.uv.sources]
+jammy-common = { workspace = true }
+
+[build-system]
+requires = ["uv_build==0.12.24"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "processor"
+namespace = true
