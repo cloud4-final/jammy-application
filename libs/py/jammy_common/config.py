@@ -14,6 +14,8 @@ from urllib.parse import urlsplit
 import psycopg
 from psycopg.conninfo import conninfo_to_dict
 
+_MAX_DURATION_SECONDS = (2**63 - 1) // 1_000_000_000
+
 
 class ConfigError(ValueError):
     """An environment setting is missing or invalid."""
@@ -92,12 +94,19 @@ def positive_int(name: str, default: int) -> int:
 
 def parse_duration(name: str, value: str, *, units_hint: str = "in s, m or h") -> int:
     """Parse integer seconds or an integer with a single duration unit."""
+    multiplier = 1
     if name.endswith("_SECONDS"):
-        return _parse_int(name, value)
-    match = re.fullmatch(r"([0-9]+)([smh])", value)
-    if not match:
-        raise ConfigError(f"{name} must be a duration {units_hint}")
-    return int(match[1]) * {"s": 1, "m": 60, "h": 3600}[match[2]]
+        seconds = _parse_int(name, value)
+    else:
+        match = re.fullmatch(r"([0-9]+)([smh])", value)
+        if not match:
+            raise ConfigError(f"{name} must be a duration {units_hint}")
+        seconds = _parse_int(name, match[1])
+        multiplier = {"s": 1, "m": 60, "h": 3600}[match[2]]
+    duration = seconds * multiplier
+    if duration > _MAX_DURATION_SECONDS:
+        raise ConfigError(f"{name} exceeds the maximum supported duration")
+    return duration
 
 
 def env_duration(name: str, default: str, *, units_hint: str = "in s, m or h") -> int:
@@ -123,7 +132,7 @@ def parse_size(name: str, value: str, *, signed_64_bit: bool = True) -> int:
 
 
 def positive_size(name: str, default: str) -> int:
-    size = parse_size(name, env(name, default), signed_64_bit=False)
+    size = parse_size(name, env(name, default))
     if not size:
         raise ConfigError(f"{name} must be positive")
     return size
@@ -171,6 +180,21 @@ _NATS_SCHEMES = frozenset({"nats", "tls", "ws", "wss"})
 _NATS_WS_SCHEMES = frozenset({"ws", "wss"})
 
 
+def validate_http_endpoint(name: str, value: str) -> str:
+    try:
+        parsed = urlsplit(value)
+        _ = parsed.port
+    except ValueError:
+        raise ConfigError(f"invalid {name}") from None
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or any(ch.isspace() for ch in parsed.netloc)
+    ):
+        raise ConfigError(f"invalid {name}")
+    return value
+
+
 def validate_database_url(value: str) -> str:
     """Validate a PostgreSQL DSN or conninfo string without connecting."""
     try:
@@ -181,7 +205,11 @@ def validate_database_url(value: str) -> str:
         raise ConfigError("invalid DATABASE_URL")
     if port_spec := parsed.get("port"):
         for raw_port in port_spec.split(","):
-            if not raw_port.isdigit() or not 1 <= int(raw_port) <= 65535:
+            try:
+                port = _parse_int("DATABASE_URL port", raw_port)
+            except ConfigError:
+                raise ConfigError("invalid DATABASE_URL") from None
+            if not 1 <= port <= 65535:
                 raise ConfigError("invalid DATABASE_URL")
     return value
 
@@ -196,11 +224,11 @@ def validate_nats_url(value: str) -> str:
         try:
             parsed = urlsplit(part)
             host = parsed.hostname
-            _ = parsed.port
+            port = parsed.port
         except ValueError:
             raise ConfigError("invalid NATS_URL") from None
         scheme = parsed.scheme.lower()
-        if scheme not in _NATS_SCHEMES or not host or any(ch.isspace() for ch in host):
+        if scheme not in _NATS_SCHEMES or not host or port == 0 or any(ch.isspace() for ch in host):
             raise ConfigError("invalid NATS_URL")
         schemes.add(scheme)
     if schemes & _NATS_WS_SCHEMES and schemes - _NATS_WS_SCHEMES:

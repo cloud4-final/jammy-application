@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -33,6 +34,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric/noop"
+	"go.opentelemetry.io/otel/propagation"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -221,6 +223,35 @@ func TestRejectedGoToQuarantineWithReason(t *testing.T) {
 		msg.Header.Get("Jammy-Ingest-Id") != "ingress-1" || msg.Header.Get("Jammy-Received-At-Ms") != raw.Header.Get("Jammy-Received-At-Ms") ||
 		msg.Time.After(raw.Time) {
 		t.Fatalf("unexpected quarantine event %+v, headers %v, receipt %+v", event.String(), msg.Header, r)
+	}
+}
+
+func TestJetStreamMessagesPropagateServerSpan(t *testing.T) {
+	handler, js := stream(t, testRawMaxBytes)
+	recorder := tracetest.NewSpanRecorder()
+	previous := otel.GetTracerProvider()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+	batch := sample()
+	batch.Events = append(batch.Events, &pb.Event{EventId: "invalid id"})
+	req := httptest.NewRequest(http.MethodPost, "/v1/batches", bytes.NewReader(marshal(t, batch)))
+	req.Header.Set("Content-Type", protobuf)
+	req.Header.Set("traceparent", "00-00000000000000000000000000000042-0000000000000023-01")
+	req.Header.Set("tracestate", "vendor=value")
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, req)
+	receipt(t, resp)
+	span := recorder.Ended()[0].SpanContext()
+	for _, name := range []string{"raw-a1", "quarantine-raw-a1"} {
+		headers := stored(t, js, name).Header
+		ctx := propagation.TraceContext{}.Extract(t.Context(), propagation.HeaderCarrier(headers))
+		if got := trace.SpanContextFromContext(ctx); !got.Equal(span.WithRemote(true)) {
+			t.Fatalf("%s published trace context %v, expected %v", name, got, span)
+		}
 	}
 }
 
@@ -492,6 +523,56 @@ func TestUnreadyRejectsBeforeReadingBody(t *testing.T) {
 	h.ServeHTTP(resp, req)
 	if resp.Code != http.StatusServiceUnavailable {
 		t.Fatalf("got HTTP %d, want 503", resp.Code)
+	}
+}
+
+func TestUnreadyRespondsBeforeClientUploadsBody(t *testing.T) {
+	h := intake(t, nil, 1)
+	server := httptest.NewServer(h)
+	t.Cleanup(server.Close)
+	conn, err := net.Dial("tcp", server.Listener.Addr().String())
+	mustOK(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+	mustOK(t, conn.SetDeadline(time.Now().Add(3*time.Second)))
+	_, err = io.WriteString(conn, "POST /v1/batches HTTP/1.1\r\nHost: ingest\r\nContent-Length: 128\r\n\r\n")
+	mustOK(t, err)
+	response, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodPost})
+	mustOK(t, err)
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusServiceUnavailable || response.Header.Get("Retry-After") != "2" {
+		t.Fatalf("got HTTP %d with headers %v", response.StatusCode, response.Header)
+	}
+}
+
+func TestAdmittedRequestFinishesWhenReadinessChanges(t *testing.T) {
+	sink := blockedSink{make(chan struct{}), make(chan struct{})}
+	close(sink.release)
+	h := intake(t, sink, 1)
+	h.SetReady(true)
+	reader, writer := io.Pipe()
+	t.Cleanup(func() { _ = reader.Close() })
+	t.Cleanup(func() { _ = writer.Close() })
+	body := marshal(t, sample())
+	req := httptest.NewRequest(http.MethodPost, "/v1/batches", reader)
+	req.Header.Set("Content-Type", protobuf)
+	resp := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.ServeHTTP(resp, req)
+	}()
+
+	// Wait for the handler to read part of the admitted request before draining.
+	_, err := writer.Write(body[:1])
+	mustOK(t, err)
+	h.Drain()
+	h.SetReady(false)
+	_, err = writer.Write(body[1:])
+	mustOK(t, err)
+	mustOK(t, writer.Close())
+	<-done
+	if got := receipt(t, resp); got.Accepted != 1 {
+		t.Fatalf("unexpected receipt %+v", got)
 	}
 }
 

@@ -29,12 +29,13 @@ type Manifest struct {
 }
 
 type Exporter struct {
-	Pool      *pgxpool.Pool
-	Archive   pq.Archive
-	Lateness  time.Duration
-	KeyPrefix string
-	index     *seal.Index
-	pending   *preparedExport
+	Pool       *pgxpool.Pool
+	Archive    pq.Archive
+	Lateness   time.Duration
+	KeyPrefix  string
+	index      *seal.Index
+	lastExport string
+	pending    *preparedExport
 }
 
 type stageGroup struct {
@@ -70,20 +71,8 @@ func (e *Exporter) ExportNext(ctx context.Context) (bool, error) {
 		}
 		retry := e.pending
 		e.pending = nil
-		// Reconstruct from durable objects only once and after acquiring the
-		// exporter lock. Ignore objects from unfinished DB exports.
-		if e.index == nil {
-			archived, err := archivedPartitions(ctx, tx)
-			if err != nil {
-				return err
-			}
-			index, err := seal.LoadWithPrefix(ctx, e.Archive.Objects, e.KeyPrefix, func(m pq.Manifest) bool {
-				return m.Source == "direct-db" && m.Partition != nil && archived[*m.Partition]
-			})
-			if err != nil {
-				return err
-			}
-			e.index = index
+		if err := e.syncIndex(ctx, tx); err != nil {
+			return err
 		}
 		name, err := oldest(ctx, tx)
 		if err != nil {
@@ -137,6 +126,11 @@ func (e *Exporter) ExportNext(ctx context.Context) (bool, error) {
 			return existing.Partition == prepared.part.Partition && existing.Rows == prepared.part.Rows &&
 				slices.Equal(existing.Files, prepared.part.Files)
 		})
+		if errors.Is(err, pq.ErrManifestConflict) {
+			// The partition is still attached and the exporter lock is held, so
+			// this manifest is from an earlier, uncommitted attempt.
+			digest, err = pq.PutJSON(ctx, e.Archive.Objects, key, &prepared.part, nil)
+		}
 		if err != nil {
 			return err
 		}
@@ -187,11 +181,38 @@ func (e *Exporter) ExportNext(ctx context.Context) (bool, error) {
 	if exported {
 		for _, file := range prepared.files {
 			if err := e.index.Record(file.ref, file.manifest, "db"); err != nil {
+				e.index = nil
 				return exported, err
 			}
 		}
+		e.lastExport = prepared.part.Partition
 	}
 	return exported, e.flushCommitted(ctx)
+}
+
+// syncIndex runs with the exporter lock held. Partitions export in order, so
+// a changed last export indicates another worker updated the durable catalog.
+func (e *Exporter) syncIndex(ctx context.Context, tx pgx.Tx) error {
+	var latest string
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(max(partition_name),'') FROM jammy.archive_exports
+		WHERE dropped_at IS NOT NULL`).Scan(&latest); err != nil {
+		return err
+	}
+	if e.index != nil && latest == e.lastExport {
+		return nil
+	}
+	archived, err := archivedPartitions(ctx, tx)
+	if err != nil {
+		return err
+	}
+	index, err := seal.LoadWithPrefix(ctx, e.Archive.Objects, e.KeyPrefix, func(m pq.Manifest) bool {
+		return m.Source == "direct-db" && m.Partition != nil && archived[*m.Partition]
+	})
+	if err != nil {
+		return err
+	}
+	e.index, e.lastExport = index, latest
+	return nil
 }
 
 func (e *Exporter) exportKey(partition string) string {
@@ -228,6 +249,9 @@ func (e *Exporter) flushCommitted(ctx context.Context) error {
 	return pgx.BeginFunc(ctx, e.Pool, func(tx pgx.Tx) error {
 		var lock bool
 		if err := tx.QueryRow(ctx, advisoryLockQuery).Scan(&lock); err != nil || !lock {
+			return err
+		}
+		if err := e.syncIndex(ctx, tx); err != nil {
 			return err
 		}
 		pending, err := oldest(ctx, tx)

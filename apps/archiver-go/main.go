@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -199,6 +200,7 @@ func load() (settings, error) {
 }
 
 type streamStatus struct {
+	name    string
 	ready   atomic.Bool
 	unacked atomic.Int64
 }
@@ -252,8 +254,11 @@ func (cfg settings) run(ctx context.Context) error {
 		defer pool.Close()
 	}
 	streams := make([]streamStatus, len(cfg.streams))
+	for i, stream := range cfg.streams {
+		streams[i].name = stream
+	}
 	ready := func(ctx context.Context) bool {
-		return isReady(ctx, cfg.bucket, client, pool, nc, streams)
+		return isReady(ctx, cfg.bucket, client, pool, nc, js, streams)
 	}
 	probe := admin.New(cfg.AdminPort, map[string]func(context.Context) bool{"dependencies": ready})
 	if err := probe.Start(); err != nil {
@@ -331,7 +336,7 @@ func (cfg settings) run(ctx context.Context) error {
 						})
 						if err == nil {
 							status.ready.Store(true)
-							err = sourcejs.Run(ctx, consumer, cfg.flushBytes, cfg.flushInterval, cfg.ackWait, func(work context.Context, messages []jetstream.Msg) error {
+							err = sourcejs.Run(ctx, consumer, cfg.flushBytes, cfg.flushInterval, cfg.ackWait, drainBudget(cfg.ShutdownTimeout), func(work context.Context, messages []jetstream.Msg) error {
 								parent, links := sourcejs.FlushTraceContext(work, messages)
 								work, span := tracer.Start(parent, "archive.flush", trace.WithSpanKind(trace.SpanKindConsumer), trace.WithLinks(links...))
 								defer span.End()
@@ -360,7 +365,7 @@ func (cfg settings) run(ctx context.Context) error {
 	return nil
 }
 
-func isReady(ctx context.Context, bucket string, client *s3.Client, pool *pgxpool.Pool, nc *nats.Conn, streams []streamStatus) bool {
+func isReady(ctx context.Context, bucket string, client *s3.Client, pool *pgxpool.Pool, nc *nats.Conn, js jetstream.JetStream, streams []streamStatus) bool {
 	check, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
 	if pool != nil {
@@ -373,6 +378,9 @@ func isReady(ctx context.Context, bucket string, client *s3.Client, pool *pgxpoo
 		}
 		for i := range streams {
 			if !streams[i].ready.Load() {
+				return false
+			}
+			if _, err := js.Stream(check, streams[i].name); err != nil {
 				return false
 			}
 		}
@@ -388,18 +396,29 @@ func s3Ready(ctx context.Context, client *s3.Client, bucket string) bool {
 }
 
 func validateNATSURL(raw string) error {
+	invalid := errors.New("invalid NATS_URL")
+	var hasTCP, hasWebSocket bool
 	for part := range strings.SplitSeq(raw, ",") {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			return errors.New("invalid NATS_URL")
+		parsed, err := url.Parse(strings.TrimSpace(part))
+		if err != nil || parsed.Hostname() == "" || strings.ContainsFunc(parsed.Hostname(), unicode.IsSpace) {
+			return invalid
 		}
-		if !strings.Contains(part, "://") {
-			part = "nats://" + part
+		if port := parsed.Port(); port != "" {
+			if _, err := strconv.ParseUint(port, 10, 16); err != nil {
+				return invalid
+			}
 		}
-		parsed, err := url.Parse(part)
-		if err != nil || parsed.Host == "" {
-			return errors.New("invalid NATS_URL")
+		switch parsed.Scheme {
+		case "nats", "tls":
+			hasTCP = true
+		case "ws", "wss":
+			hasWebSocket = true
+		default:
+			return invalid
 		}
+	}
+	if hasTCP && hasWebSocket {
+		return invalid
 	}
 	return nil
 }
@@ -422,6 +441,13 @@ func prepareStage(dir string) error {
 		}
 	}
 	return nil
+}
+
+func drainBudget(shutdownTimeout time.Duration) time.Duration {
+	if shutdownTimeout <= 0 {
+		return 0
+	}
+	return shutdownTimeout - min(2*time.Second, shutdownTimeout/4)
 }
 
 func pause(ctx context.Context, delay time.Duration) {

@@ -249,3 +249,38 @@ def test_database_poll_metrics_record_last_row_lag_and_reset_on_idle(monkeypatch
         ]
 
     asyncio.run(run())
+
+
+def test_direct_db_readiness_follows_poll_result(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+
+    from processor.main import Processor
+
+    async def run():
+        stop = asyncio.Event()
+        service = Processor(SimpleNamespace(drop_ratio=0.5, streams=()), None, Mock())
+        service.database_ready.set()
+        monkeypatch.setattr("processor.main.db.ping", AsyncMock(return_value=True))
+        ready = [await service.is_ready()]
+
+        async def pause(_delay):
+            ready.append(await service.is_ready())
+            if len(ready) == 5:
+                stop.set()
+
+        monkeypatch.setattr("processor.main.asyncio.sleep", pause)
+        source = SimpleNamespace(
+            poll=AsyncMock(
+                side_effect=[
+                    psycopg.errors.UndefinedColumn("last_xid"),
+                    ([], 0),
+                    psycopg.OperationalError("DB unavailable"),
+                    Fenced("standby site"),
+                ]
+            )
+        )
+        await service.poll_database(stop, source)
+        assert ready == [False, False, True, False, True]
+
+    asyncio.run(run())
