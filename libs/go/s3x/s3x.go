@@ -3,12 +3,32 @@ package s3x
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/cloud4-final/jammy-5th/libs/go/config"
 )
+
+// NormalizePrefix trims leading and trailing slashes and appends a single
+// trailing slash when non-empty.
+func NormalizePrefix(raw string) string {
+	trimmed := strings.Trim(raw, "/")
+	if trimmed == "" {
+		return ""
+	}
+	return trimmed + "/"
+}
+
+// Prefix reads S3_PREFIX (with S3_PREFIX_FILE precedence) and normalizes it.
+func Prefix() (string, error) {
+	raw, err := config.Lookup("S3_PREFIX", "")
+	if err != nil {
+		return "", err
+	}
+	return NormalizePrefix(raw), nil
+}
 
 // New creates an S3 client with the SDK's standard credential provider chain.
 func New(ctx context.Context) (*s3.Client, error) {
