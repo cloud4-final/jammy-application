@@ -2,7 +2,7 @@
 
 import asyncio
 from bisect import bisect_left, bisect_right
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import timedelta
 from time import monotonic
@@ -101,6 +101,7 @@ class JetStreamArchive:
         self.persist_lock = persist_lock
         self.observe = observe
         self.subscription = None
+        self.fetched = deque()
         self.pending = {}
         self.size = 0
         self.opened_at = 0.0
@@ -140,11 +141,25 @@ class JetStreamArchive:
     async def poll(self):
         if self.due():
             await self.flush()
-        try:
-            messages = await self.subscription.fetch(batch=64, timeout=1)
-        except NatsTimeout:
-            return False
-        for message in messages:
+        if not self.fetched:
+            try:
+                self.fetched.extend(await self.subscription.fetch(batch=64, timeout=1))
+            except NatsTimeout:
+                return False
+        had_messages = bool(self.fetched)
+        await self._buffer_fetched()
+        return had_messages
+
+    async def drain(self):
+        # Retry the pending flush with its original bounds before taking the
+        # rest of the messages already delivered by the broker.
+        await self.flush()
+        await self._buffer_fetched()
+        await self.flush()
+
+    async def _buffer_fetched(self):
+        while self.fetched:
+            message = self.fetched[0]
             sequence = message.metadata.sequence.stream
             if sequence not in self.pending:
                 try:
@@ -153,6 +168,7 @@ class JetStreamArchive:
                     )
                 except ValueError, KeyError, OverflowError:
                     await message.term()
+                    self.fetched.popleft()
                     self.store.files.add(1, {"result": "poison"})
                     continue
                 if not self.pending:
@@ -161,10 +177,10 @@ class JetStreamArchive:
                 self.size += delivery.wire_bytes
             else:
                 self.pending[sequence].message = message
+            self.fetched.popleft()
             self.observe(self.stream, len(self.pending))
             if self.due():
                 await self.flush()
-        return bool(messages)
 
     async def flush(self):
         if not self.pending:

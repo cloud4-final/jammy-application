@@ -43,6 +43,7 @@ class Dispatcher:
         self._lease_generation = None
         self._renewal = None
         self._state = LeaseState(False, 0)
+        self._lease_lost = False
         self._fenced = False
         self._publication_lock = asyncio.Lock()
         self._propagator = TraceContextTextMapPropagator()
@@ -63,6 +64,12 @@ class Dispatcher:
         return (
             self._state.active
             and self._lease_generation == self.leader.generation
+            and self._renewal_is_fresh()
+        )
+
+    def _renewal_is_fresh(self) -> bool:
+        return (
+            not self._lease_lost
             and self._renewal is not None
             and self.clock() - self._renewal.started_at < self.lease.fence_seconds
         )
@@ -82,24 +89,26 @@ class Dispatcher:
             if generation != self.leader.generation:
                 return
             if not state.active:
-                self._state = LeaseState(False, self._state.epoch)
+                self._lease_lost = True
                 await self._fence_if_stale()
                 await self.leader.release(generation=generation)
-            elif renewal is not self._renewal:
-                if self._lease_generation == generation and not self._lease_is_fresh():
-                    await self._fence_if_stale()
-                    return
+                return
+            if self._lease_generation == generation and not self._renewal_is_fresh():
+                await self._fence_if_stale()
+                return
+            if self._lease_generation != generation or renewal is not self._renewal:
                 self._lease_generation = generation
                 self._state = LeaseState(False, state.epoch)
                 self._renewal = renewal
+                self._lease_lost = False
                 self._fenced = False
-                if self.clock() - renewal.started_at >= self.lease.fence_seconds:
-                    await self._fence_if_stale()
-                elif await self._publish_lease(fenced=False):
-                    self._state = state
+            if not self._renewal_is_fresh():
+                await self._fence_if_stale()
+            elif not self._state.active and await self._publish_lease(fenced=False):
+                self._state = state
 
     async def fence_if_stale(self) -> None:
-        if self._renewal is not None and not self._lease_is_fresh():
+        if self._renewal is not None and not self._renewal_is_fresh():
             async with self._publication_lock:
                 await self._fence_if_stale()
 
@@ -109,7 +118,7 @@ class Dispatcher:
             and self.leader.generation is not None
             and self._lease_generation == self.leader.generation
             and not self._fenced
-            and not self._lease_is_fresh()
+            and not self._renewal_is_fresh()
         ):
             self._state = LeaseState(False, self._state.epoch)
             await self._publish_lease(fenced=True)

@@ -6,6 +6,7 @@ from itertools import pairwise
 from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from urllib.error import HTTPError
 from urllib.request import urlopen
 
@@ -15,7 +16,7 @@ from botocore.exceptions import ClientError
 from jammy_common.admin import AdminServer
 from jammy_common.config import CommonConfig, ConfigError
 from portal_publisher import main, publish
-from portal_publisher.publish import Publisher
+from portal_publisher.publish import Publisher, S3Operation
 from psycopg_pool import AsyncConnectionPool
 from testcontainers.core.container import DockerContainer
 
@@ -155,34 +156,21 @@ def test_portal_retries_errors_after_one_second(postgres, monkeypatch):
     [
         (60, 35, [25.0, 25.0], [0, 1, 2]),
         (59, 2, [0.0, 57.0], [-1, 0, 1]),
+        (60, 125, [0.0, 0.0], [0, 1, 2]),
     ],
 )
 def test_portal_schedule_aligns_to_minute_boundaries_without_skipping(
-    postgres,
-    minute,
     monkeypatch,
     start_offset_s,
     publish_duration_s,
     expected_delays,
     minute_offsets,
 ):
+    minute = datetime(2026, 11, 23, 1, 0, tzinfo=UTC)
     expected_minutes = [
         (minute + timedelta(minutes=offset)).strftime("%Y%m%d%H%M")
         for offset in minute_offsets
     ]
-    with psycopg.connect(postgres) as conn:
-        conn.execute("TRUNCATE jammy.assets, jammy.summary_1m")
-        conn.execute("INSERT INTO jammy.assets VALUES ('a', 'team-1', 'solar', 10)")
-        with conn.cursor() as cursor:
-            cursor.executemany(
-                """
-                INSERT INTO jammy.summary_1m (profile, routing_key, minute, count, sum, min, max)
-                VALUES ('solar', 'a', %s, 2, 6, 1, 5)
-                """,
-                [(minute + timedelta(minutes=offset),) for offset in minute_offsets],
-            )
-
-    monkeypatch.setenv("DATABASE_URL", postgres)
     monkeypatch.setenv("S3_BUCKET", "test-bucket")
     monkeypatch.setenv("PORTAL_INTERVAL_SECONDS", "60")
 
@@ -219,6 +207,9 @@ def test_portal_schedule_aligns_to_minute_boundaries_without_skipping(
         raise TimeoutError
 
     stop = asyncio.Event()
+    rows = {"team-1": [{"asset_id": "a", "count": 2, "avg_kw": 3, "min_kw": 1, "max_kw": 5}]}
+    monkeypatch.setattr(main.db, "pool", AsyncMock(return_value=AsyncMock()))
+    monkeypatch.setattr(Publisher, "_load", AsyncMock(return_value=rows))
     monkeypatch.setattr(main.s3, "client", lambda _cfg: store)
     monkeypatch.setattr(main, "datetime", FakeDatetime)
     monkeypatch.setattr(Publisher, "publish_once", timed_publish)
@@ -408,13 +399,16 @@ def test_s3_ready_bounds_stalled_bucket_check():
 
     async def exercise():
         store = StalledStore()
+        operation = S3Operation()
         admin = AdminServer(
-            0, {"s3": lambda: main.s3_ready(store, "test-bucket", timeout=0.05)}
+            0, {"s3": lambda: main.s3_ready(operation, store, "test-bucket", timeout=0.05)}
         )
         await admin.start()
         try:
             async with asyncio.timeout(1):
                 assert await asyncio.to_thread(get_status, admin.port) == 503
+                assert await asyncio.to_thread(get_status, admin.port) == 503
+                assert store.buckets == ["test-bucket"]
                 store.stalled = False
                 release.set()
                 assert await asyncio.to_thread(get_status, admin.port) == 200
@@ -471,8 +465,10 @@ def test_s3_upload_timeout_counts_error_and_retries(monkeypatch):
         def __init__(self):
             super().__init__()
             self.stall_next = True
+            self.put_calls = []
 
         def put_object(self, *, Bucket, Key, Body, ContentType):
+            self.put_calls.append(Key)
             if self.stall_next:
                 release.wait(5)
             super().put_object(Bucket=Bucket, Key=Key, Body=Body, ContentType=ContentType)
@@ -495,6 +491,8 @@ def test_s3_upload_timeout_counts_error_and_retries(monkeypatch):
         try:
             async with asyncio.timeout(1):
                 assert await publisher.publish_once(now) == "error"
+                assert await publisher.publish_once(now) == "error"
+            assert len(store.put_calls) == 1
             assert publisher._retry_minute == minute
             assert store.objects == {}
 
@@ -502,7 +500,7 @@ def test_s3_upload_timeout_counts_error_and_retries(monkeypatch):
             release.set()
             assert await publisher.publish_once(now + timedelta(seconds=20)) == "ok"
             assert publisher._retry_minute is None
-            assert counter.results == ["error", "ok"]
+            assert counter.results == ["error", "error", "ok"]
             assert (
                 store.objects["portal/team-1/latest.json"]["minute"]
                 == minute.isoformat()

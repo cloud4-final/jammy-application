@@ -44,6 +44,38 @@ def test_readyz_tracks_dependency():
     asyncio.run(exercise())
 
 
+def test_admin_server_enforces_header_read_timeout(monkeypatch):
+    import socket
+    import time
+
+    from jammy_common import admin as admin_module
+    from jammy_common.http import HeaderTimeoutProtocol
+
+    class _ShortHeaderTimeoutProtocol(HeaderTimeoutProtocol):
+        header_timeout = 0.1
+
+    async def exercise():
+        default_admin = AdminServer(0, {})
+        assert default_admin._server.config.http is HeaderTimeoutProtocol
+
+        monkeypatch.setattr(admin_module, "HeaderTimeoutProtocol", _ShortHeaderTimeoutProtocol)
+        admin = AdminServer(0, {})
+        await admin.start()
+        try:
+            def probe_stall():
+                with socket.create_connection(("127.0.0.1", admin.port), timeout=2) as client:
+                    started = time.monotonic()
+                    client.sendall(b"GET /livez HTTP/1.1\r\nHost: localhost\r\n")
+                    assert client.recv(1) == b""
+                    assert time.monotonic() - started < 1.0
+
+            await asyncio.to_thread(probe_stall)
+        finally:
+            await admin.close()
+
+    asyncio.run(exercise())
+
+
 def test_readyz_reports_timeout_and_exception_independently():
     async def exercise():
         async def slow():
@@ -105,6 +137,19 @@ def test_metrics_exposes_duration_histogram_buckets(monkeypatch):
             async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{admin.port}") as client:
                 response = await client.get("/metrics")
                 assert response.status_code == 200
+                assert response.headers["content-type"].startswith("text/plain")
+                openmetrics = await client.get(
+                    "/metrics", headers={"Accept": "application/openmetrics-text; version=1.0.0"}
+                )
+                assert openmetrics.status_code == 200
+                assert openmetrics.headers["content-type"].startswith("application/openmetrics-text")
+                assert openmetrics.text.endswith("# EOF\n")
+                assert "http_server_request_duration_seconds_bucket" in openmetrics.text
+                malformed_accept = await client.get(
+                    "/metrics", headers={"Accept": "application/openmetrics-text; version=bad"}
+                )
+                assert malformed_accept.status_code == 200
+                assert malformed_accept.headers["content-type"].startswith("text/plain")
                 families = {
                     family.name: family for family in text_string_to_metric_families(response.text)
                 }

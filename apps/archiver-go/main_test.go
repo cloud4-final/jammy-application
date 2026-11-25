@@ -118,6 +118,20 @@ func TestArchiveEndToEnd(t *testing.T) {
 	t.Cleanup(nc.Close)
 	js, err := jetstream.New(nc)
 	check(t, err)
+	t.Run("readiness detects deleted stream", func(t *testing.T) {
+		const name = "readiness-test"
+		_, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: name, Subjects: []string{"jammy.raw." + name}})
+		check(t, err)
+		streams := []streamStatus{{name: name}}
+		streams[0].ready.Store(true)
+		if !isReady(ctx, bucket, client, nil, nc, js, streams) {
+			t.Fatal("expected readiness while stream exists")
+		}
+		check(t, js.DeleteStream(ctx, name))
+		if isReady(ctx, bucket, client, nil, nc, js, streams) {
+			t.Fatal("expected readiness to fail after stream deletion")
+		}
+	})
 	stream, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: "raw-test", Subjects: []string{"jammy.raw.raw-test"}})
 	check(t, err)
 	consumer, err := stream.CreateConsumer(ctx, jetstream.ConsumerConfig{
@@ -265,7 +279,7 @@ func TestArchiveEndToEnd(t *testing.T) {
 			_, err = pool.Exec(ctx, string(data))
 			check(t, err)
 		}
-		start := time.Now().UTC().Truncate(time.Hour).Add(-3 * time.Hour)
+		start := time.Now().UTC().Truncate(time.Hour).Add(-7 * time.Hour)
 		partition := "raw_events_" + start.Format("2006010215")
 		_, err = pool.Exec(ctx, fmt.Sprintf("CREATE TABLE jammy.%s PARTITION OF jammy.raw_events FOR VALUES FROM ('%s') TO ('%s')",
 			partition, start.Format(time.RFC3339), start.Add(time.Hour).Format(time.RFC3339)))
@@ -401,6 +415,87 @@ func TestArchiveEndToEnd(t *testing.T) {
 			wantFile := seal.Prefix("solar", start.Add(-time.Hour)) + "db-" + partition + ".parquet"
 			if doc.Rows != 1 || len(doc.Files) != 1 || doc.Files[0] != wantFile {
 				t.Fatalf("incorrect recovered seal with no partitions: %+v", doc)
+			}
+		})
+		createPartition := func(t *testing.T, at time.Time) string {
+			t.Helper()
+			name := "raw_events_" + at.Format("2006010215")
+			_, err := pool.Exec(ctx, fmt.Sprintf("CREATE TABLE jammy.%s PARTITION OF jammy.raw_events FOR VALUES FROM ('%s') TO ('%s')",
+				name, at.Format(time.RFC3339), at.Add(time.Hour).Format(time.RFC3339)))
+			check(t, err)
+			return name
+		}
+		insertRow := func(t *testing.T, id string, event, received time.Time) {
+			t.Helper()
+			_, err := pool.Exec(ctx, `INSERT INTO jammy.raw_events (event_id,routing_key,profile,schema_version,event_time,received_at,ingest_id,primary_value,payload)
+				VALUES ($1,'a','solar',1,$2,$3,'pg',1,''::bytea)`, id, event, received)
+			check(t, err)
+		}
+		advanceCursor := func(t *testing.T) {
+			t.Helper()
+			_, err := pool.Exec(ctx, `UPDATE jammy.consumer_cursor SET (last_xid,last_event_id) =
+				(SELECT ingest_xid,event_id FROM jammy.raw_events ORDER BY ingest_xid DESC,event_id DESC LIMIT 1)`)
+			check(t, err)
+		}
+		t.Run("ReplacesProvisionalManifestAfterPartitionChanges", func(t *testing.T) {
+			at := start.Add(time.Hour)
+			name := createPartition(t, at)
+			insertRow(t, "provisional-first", at, at)
+			advanceCursor(t)
+			exporter := exportdb.Exporter{Pool: pool, Archive: archive, Lateness: 10 * time.Minute}
+			blocker, err := pool.Begin(ctx)
+			check(t, err)
+			defer func() { _ = blocker.Rollback(ctx) }()
+			_, err = blocker.Exec(ctx, "LOCK TABLE ONLY jammy.raw_events IN ACCESS SHARE MODE")
+			check(t, err)
+			done, err := exporter.ExportNext(ctx)
+			var lockErr *pgconn.PgError
+			if done || !errors.As(err, &lockErr) || lockErr.Code != "55P03" {
+				t.Fatalf("expected lock timeout, got done=%v err=%v", done, err)
+			}
+			check(t, blocker.Rollback(ctx))
+			insertRow(t, "provisional-second", at, at)
+			advanceCursor(t)
+			done, err = exporter.ExportNext(ctx)
+			check(t, err)
+			if !done {
+				t.Fatal("changed partition remained attached")
+			}
+			var manifest exportdb.Manifest
+			check(t, pq.ReadJSON(ctx, store, "exports/direct-db/"+name+".json", &manifest))
+			if manifest.Rows != 2 || len(manifest.Files) != 1 {
+				t.Fatalf("incorrect replacement manifest: %+v", manifest)
+			}
+			check(t, archive.Verify(ctx, manifest.Files[0]))
+		})
+		t.Run("SealIncludesFilesCommittedByAnotherExporter", func(t *testing.T) {
+			at := start.Add(2 * time.Hour)
+			first := createPartition(t, at)
+			second := createPartition(t, at.Add(time.Hour))
+			insertRow(t, "peer-first", at, at)
+			insertRow(t, "peer-second", at, at.Add(time.Hour))
+			const prefix = "peer-export"
+			exporter := exportdb.Exporter{Pool: pool, Archive: archive, Lateness: 10 * time.Minute, KeyPrefix: prefix}
+			peer := exporter
+			done, err := exporter.ExportNext(ctx)
+			check(t, err)
+			if done {
+				t.Fatal("exported before the processor consumed rows")
+			}
+			advanceCursor(t)
+			for _, worker := range []*exportdb.Exporter{&peer, &exporter} {
+				done, err := worker.ExportNext(ctx)
+				check(t, err)
+				if !done {
+					t.Fatal("expected a partition export")
+				}
+			}
+			folder := seal.PrefixWith(prefix, "solar", at)
+			var doc seal.Document
+			check(t, pq.ReadJSON(ctx, store, folder+"_SEALED-db.json", &doc))
+			want := []string{folder + "db-" + first + ".parquet", folder + "db-" + second + ".parquet"}
+			if doc.Rows != 2 || !slices.Equal(doc.Files, want) {
+				t.Fatalf("incorrect seal across exporters: %+v", doc)
 			}
 		})
 	})
@@ -780,10 +875,16 @@ func TestLoadValidatesBackendEnv(t *testing.T) {
 		_, err := load()
 		assertErr(t, err, "NATS_URL is required")
 
-		for _, bad := range []string{"://bad", "nats://", "   ", "nats://localhost:4222,"} {
+		for _, bad := range []string{"://bad", "nats://", "   ", "nats://localhost:4222,", "http://localhost:4222",
+			"localhost:4222", "nats://:4222", "nats://localhost:65536", "nats://localhost,wss://localhost"} {
 			t.Setenv("NATS_URL", bad)
 			_, err := load()
 			assertErr(t, err, "invalid NATS_URL")
+		}
+		for _, valid := range []string{"nats://localhost,tls://localhost:4222", "ws://localhost,wss://localhost"} {
+			t.Setenv("NATS_URL", valid)
+			_, err := load()
+			check(t, err)
 		}
 
 		natsFile := filepath.Join(t.TempDir(), "nats_url")

@@ -3,7 +3,7 @@
 import argparse
 import asyncio
 
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 from jammy_common.config import ConfigError
 
 from .lease import Lease
@@ -24,6 +24,8 @@ def main() -> None:
         if code == "ConditionalCheckFailedException":
             parser.exit(1, "Lease takeover requires an absent or expired lease.\n")
         parser.exit(1, f"Lease takeover failed ({code}).\n")
+    except BotoCoreError as error:
+        parser.exit(1, f"Lease takeover failed ({type(error).__name__}).\n")
     except (ConfigError, ValueError) as error:
         parser.exit(1, f"{error}\n")
     print(epoch)

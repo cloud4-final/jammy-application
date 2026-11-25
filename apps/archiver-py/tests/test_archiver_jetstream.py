@@ -535,6 +535,75 @@ def test_flush_limit_counts_wire_batch_bytes(monkeypatch):
     asyncio.run(check())
 
 
+@pytest.mark.parametrize("shutdown", [False, True])
+def test_failed_flush_preserves_unprocessed_messages_from_pull(monkeypatch, shutdown):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+
+    from archiver.source_jetstream import JetStreamArchive
+
+    async def run():
+        event = Event(event_id="event", profile="synth-small", schema_version=1)
+        body = EventBatch(batch_id="batch", events=[event]).SerializeToString()
+        headers = {
+            "Content-Type": "application/x-protobuf",
+            "Nats-Msg-Id": "batch",
+            "Jammy-Ingest-Id": "fixture",
+            "Jammy-Received-At-Ms": "1795392000000",
+        }
+        messages = [
+            SimpleNamespace(
+                data=body,
+                headers=headers,
+                metadata=SimpleNamespace(sequence=SimpleNamespace(stream=sequence)),
+                ack=AsyncMock(),
+                in_progress=AsyncMock(),
+            )
+            for sequence in (1, 2)
+        ]
+        source = JetStreamArchive(
+            None,
+            SimpleNamespace(flush_bytes=len(body), flush_seconds=100, ack_wait=30),
+            Mock(),
+            Mock(),
+            Mock(),
+            stream="raw-fixture",
+            persist_lock=asyncio.Lock(),
+        )
+        source.subscription = SimpleNamespace(
+            fetch=AsyncMock(side_effect=[messages, []])
+        )
+        attempts = []
+
+        def persist():
+            attempts.append(tuple(source.pending))
+            if len(attempts) == 1:
+                raise OSError("temporarily unavailable")
+
+        monkeypatch.setattr(source, "_persist", persist)
+        with pytest.raises(OSError, match="temporarily unavailable"):
+            await source.poll()
+        for message in messages:
+            message.ack.assert_not_awaited()
+
+        if shutdown:
+            # Exercise the same drain entry point used by the running service.
+            from archiver.main import Archiver
+
+            stop = asyncio.Event()
+            stop.set()
+            service = Archiver(SimpleNamespace(lateness=timedelta(0)), Mock(), Mock())
+            await service.consume(stop, source)
+        else:
+            assert await source.poll()
+        assert attempts == [(1,), (1,), (2,)]
+        source.subscription.fetch.assert_awaited_once()
+        for message in messages:
+            message.ack.assert_awaited_once()
+
+    asyncio.run(run())
+
+
 def test_archive_config_rejects_invalid_limits(monkeypatch):
     from archiver.main import ArchiveConfig
     from jammy_common.config import ConfigError
@@ -586,6 +655,41 @@ def test_archive_config_rejects_invalid_limits(monkeypatch):
     assert ArchiveConfig.from_env().s3_prefix == "site-a/"
 
 
+def test_archive_duration_limits_match_go(monkeypatch):
+    from archiver.main import ArchiveConfig
+    from jammy_common.config import ConfigError
+
+    settings = {
+        "SITE_ID": "test",
+        "PIPELINE_MODE": "jetstream",
+        "NATS_URL": "nats://localhost",
+        "NATS_STREAMS": "raw-fixture",
+        "S3_BUCKET": "bucket",
+    }
+    for name, value in settings.items():
+        monkeypatch.setenv(name, value)
+    maximum = (2**63 - 1) // 10**9
+    for name, suffix in (
+        ("SEAL_LATENESS", "s"),
+        ("ARCHIVE_FLUSH_SECONDS", ""),
+        ("ACK_WAIT_SECONDS", ""),
+    ):
+        with monkeypatch.context() as patch:
+            patch.setenv(name, f"{maximum + 1}{suffix}")
+            with pytest.raises(ConfigError, match=name):
+                ArchiveConfig.from_env()
+
+    monkeypatch.setenv("ARCHIVE_FLUSH_SECONDS", str(maximum))
+    monkeypatch.delenv("ACK_WAIT_SECONDS", raising=False)
+    with pytest.raises(ConfigError, match="ACK_WAIT_SECONDS"):
+        ArchiveConfig.from_env()
+    monkeypatch.setenv("ACK_WAIT_SECONDS", str(maximum))
+    monkeypatch.setenv("SEAL_LATENESS", f"{maximum}s")
+    config = ArchiveConfig.from_env()
+    assert config.flush_seconds == config.ack_wait == maximum
+    assert config.lateness == timedelta(seconds=maximum)
+
+
 def test_archive_config_validates_database_and_nats_url(monkeypatch):
     from archiver.main import ArchiveConfig, main
     from jammy_common.config import ConfigError
@@ -624,19 +728,44 @@ def test_shutdown_retries_transient_flush_error(monkeypatch):
         stop = asyncio.Event()
         stop.set()
         service = Archiver(SimpleNamespace(lateness=timedelta(0)), Mock(), Mock())
-        source = SimpleNamespace(flush=AsyncMock(side_effect=[OSError(), None]))
+        source = SimpleNamespace(drain=AsyncMock(side_effect=[OSError(), None]))
         pause = AsyncMock()
         monkeypatch.setattr("archiver.main.asyncio.sleep", pause)
 
         await service.consume(stop, source)
 
-        assert source.flush.await_count == 2
+        assert source.drain.await_count == 2
         pause.assert_awaited_once_with(1)
-        source.flush.reset_mock(side_effect=True)
-        source.flush.side_effect = BatchIdMismatch("bad id")
+        source.drain.reset_mock(side_effect=True)
+        source.drain.side_effect = BatchIdMismatch("bad id")
         with pytest.raises(BatchIdMismatch):
             await service.consume(stop, source)
-        source.flush.assert_awaited_once()
+        source.drain.assert_awaited_once()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("error", [ValueError, KeyError, OverflowError])
+def test_consumer_propagates_permanent_flush_failure(monkeypatch, error):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+
+    from archiver.main import Archiver
+
+    async def run():
+        stop = asyncio.Event()
+        service = Archiver(SimpleNamespace(lateness=timedelta(0)), Mock(), Mock())
+        service.client = SimpleNamespace(is_connected=True)
+        source = SimpleNamespace(
+            prepare=AsyncMock(),
+            poll=AsyncMock(side_effect=error("invalid archive state")),
+            flush=AsyncMock(),
+        )
+        pause = AsyncMock(side_effect=lambda _: stop.set())
+        monkeypatch.setattr("archiver.main.asyncio.sleep", pause)
+        with pytest.raises(error, match="invalid archive state"):
+            await service.consume(stop, source)
+        pause.assert_not_awaited()
 
     asyncio.run(run())
 
@@ -966,4 +1095,43 @@ def test_export_uses_flush_seconds_and_creates_span(monkeypatch):
     assert wait_timeouts == [17]
     (span,) = exporter.get_finished_spans()
     assert span.name == "archive.export"
+    provider.shutdown()
+
+
+def test_export_backoff_starts_after_error_span_ends(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+
+    from archiver import main
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+    from opentelemetry.trace import StatusCode
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr("archiver.main.trace.get_tracer", provider.get_tracer)
+    monkeypatch.setattr(
+        "archiver.main.DbArchive",
+        lambda *_args, **_kwargs: SimpleNamespace(poll=AsyncMock(side_effect=OSError)),
+    )
+
+    async def run():
+        stop = asyncio.Event()
+
+        async def pause(duration):
+            assert duration == 1
+            (span,) = exporter.get_finished_spans()
+            assert span.name == "archive.export"
+            assert span.status.status_code == StatusCode.ERROR
+            stop.set()
+
+        monkeypatch.setattr("archiver.main.asyncio.sleep", pause)
+        service = main.Archiver(SimpleNamespace(lateness=timedelta(0)), Mock(), Mock())
+        await service.export(stop)
+
+    asyncio.run(run())
     provider.shutdown()

@@ -2,7 +2,9 @@ package s3x
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -39,6 +41,12 @@ func New(ctx context.Context) (*s3.Client, error) {
 	endpoint, err := config.Lookup("S3_ENDPOINT", "")
 	if err != nil {
 		return nil, err
+	}
+	if endpoint != "" {
+		parsed, err := url.Parse(endpoint)
+		if err != nil || parsed.Hostname() == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			return nil, errors.New("invalid S3_ENDPOINT")
+		}
 	}
 	pathStyle, err := config.Lookup("S3_FORCE_PATH_STYLE", "false")
 	if err != nil {

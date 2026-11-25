@@ -12,6 +12,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel/propagation"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -69,6 +70,7 @@ func (s *Sink) Store(ctx context.Context, req server.Batch) (bool, error) {
 		msg := nats.NewMsg(subject)
 		msg.Header.Set("Jammy-Ingest-Id", req.IngestID)
 		msg.Header.Set("Jammy-Received-At-Ms", received)
+		propagation.TraceContext{}.Inject(ctx, propagation.HeaderCarrier(msg.Header))
 		return msg
 	}
 

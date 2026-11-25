@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -79,9 +80,11 @@ func TestLoadValidatesDatabaseAndNATSURL(t *testing.T) {
 	if _, err := load(); err == nil || err.Error() != "NATS_URL is required" {
 		t.Fatalf("missing NATS_URL: got %v", err)
 	}
-	t.Setenv("NATS_URL", "://bad")
-	if _, err := load(); err == nil || err.Error() != "invalid NATS_URL" {
-		t.Fatalf("invalid NATS_URL: got %v", err)
+	for _, value := range []string{"://bad", "https://localhost", "localhost:4222", "nats://:4222", "nats://localhost:65536", "nats://localhost,ws://localhost"} {
+		t.Setenv("NATS_URL", value)
+		if _, err := load(); err == nil || err.Error() != "invalid NATS_URL" {
+			t.Fatalf("NATS_URL=%q: got %v, want invalid NATS_URL", value, err)
+		}
 	}
 	t.Setenv("NATS_URL", "nats://localhost:4222")
 	if _, err := load(); err != nil {
@@ -185,6 +188,22 @@ func TestObservationResetsLagWhenPendingZero(t *testing.T) {
 	updateSourceObservation(&src, 0)
 	if src.pending.Load() != 0 || src.lag.Load() != 0 {
 		t.Fatalf("pending=%d lag=%d, want 0 and 0", src.pending.Load(), src.lag.Load())
+	}
+}
+
+func TestAssetRefreshFailureClearsReadiness(t *testing.T) {
+	var ready atomic.Bool
+	ready.Store(true)
+	refreshErr := errors.New("asset query failed")
+	err := refreshAssetCache(t.Context(), &ready, func(context.Context) error {
+		return refreshErr
+	})
+	if !errors.Is(err, refreshErr) || ready.Load() {
+		t.Fatalf("failed refresh returned %v, ready = %v", err, ready.Load())
+	}
+	err = refreshAssetCache(t.Context(), &ready, func(context.Context) error { return nil })
+	if err != nil || !ready.Load() {
+		t.Fatalf("successful refresh returned %v, ready = %v", err, ready.Load())
 	}
 }
 

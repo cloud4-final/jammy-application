@@ -55,7 +55,14 @@ func (s *Store) prune(ctx context.Context, tx pgx.Tx) error {
 }
 
 func (s *Store) Write(ctx context.Context, write func(pgx.Tx) error) error {
-	return s.fence.Transaction(ctx, s.Pool, write)
+	acquire, cancel := context.WithTimeout(ctx, 2*time.Second)
+	conn, err := s.Pool.Acquire(acquire)
+	cancel()
+	if err != nil {
+		return err
+	}
+	defer conn.Release()
+	return s.fence.Transaction(ctx, conn, write)
 }
 
 func (s *Store) RefreshAssets(ctx context.Context) error {
@@ -108,6 +115,9 @@ func (s *Store) Commit(ctx context.Context, batches []Batch) ([]bool, error) {
 				return err
 			}
 			duplicate[index] = tag.RowsAffected() == 0
+		}
+		// Claim order controls locks. Delivery order controls equal-time readings.
+		for index, batch := range batches {
 			if !duplicate[index] {
 				events = append(events, batch.Events...)
 			}
