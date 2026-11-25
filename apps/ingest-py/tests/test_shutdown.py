@@ -229,6 +229,32 @@ def test_invalid_parity_config(monkeypatch, name):
         IngestConfig.from_env()
 
 
+def test_ingest_config_validates_database_and_nats_url(monkeypatch):
+    from ingest.main import IngestConfig, main
+    from jammy_common.config import ConfigError
+
+    monkeypatch.setenv("SITE_ID", "test")
+    monkeypatch.setenv("PIPELINE_MODE", "jetstream")
+    monkeypatch.setenv("INGEST_STREAM", "raw")
+    monkeypatch.setenv("NATS_URL", "://bad-url")
+    with pytest.raises(ConfigError, match="^invalid NATS_URL$"):
+        IngestConfig.from_env()
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == "invalid NATS_URL"
+
+    monkeypatch.setenv("NATS_URL", "wss://localhost:8443")
+    assert IngestConfig.from_env().stream == "raw"
+
+    monkeypatch.setenv("PIPELINE_MODE", "direct-db")
+    monkeypatch.setenv("DATABASE_URL", "://bad-url")
+    with pytest.raises(ConfigError, match="^invalid DATABASE_URL$"):
+        IngestConfig.from_env()
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == "invalid DATABASE_URL"
+
+
 def test_direct_db_refuses_more_workers_than_pool_connections(monkeypatch):
     from ingest.main import IngestConfig
     from jammy_common.config import ConfigError
