@@ -7,8 +7,10 @@ from jammy_common.pb.envelope_pb2 import EventBatch
 from nats.aio.client import Client
 from nats.js.api import DiscardPolicy, StorageType, StoreCompression, StreamConfig
 from nats.js.errors import NotFoundError
+from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
 PROTOBUF = "application/x-protobuf"
+_TRACE_PROPAGATOR = TraceContextTextMapPropagator()
 
 
 class JetStreamSink:
@@ -74,6 +76,7 @@ class JetStreamSink:
             "Jammy-Ingest-Id": intake.ingest_id,
             "Jammy-Received-At-Ms": str(intake.received_at_ms),
         }
+        _TRACE_PROPAGATOR.inject(common_headers)
         all_duplicate = True
         if result.rejected:
             accepted_ids = {event.event_id for event in result.accepted}

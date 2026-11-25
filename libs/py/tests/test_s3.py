@@ -4,6 +4,19 @@ from jammy_common import s3
 from jammy_common.config import CommonConfig, ConfigError
 
 
+@pytest.mark.parametrize("endpoint", ["not-a-url", "http://:9000", "ftp://storage:9000"])
+def test_s3_client_rejects_invalid_endpoint_before_loading_credentials(monkeypatch, endpoint):
+    def unexpected_client(*args, **kwargs):
+        pytest.fail("boto3 must not be initialized with an invalid endpoint")
+
+    monkeypatch.setenv("SITE_ID", "site-a")
+    monkeypatch.setenv("S3_ENDPOINT", endpoint)
+    monkeypatch.setattr(s3.boto3, "client", unexpected_client)
+
+    with pytest.raises(ConfigError, match="^invalid S3_ENDPOINT$"):
+        s3.client(CommonConfig.from_env())
+
+
 def test_s3_client_sets_explicit_timeouts_and_retries(monkeypatch):
     monkeypatch.setenv("SITE_ID", "site-a")
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test")

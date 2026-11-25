@@ -229,6 +229,36 @@ def test_invalid_parity_config(monkeypatch, name):
         IngestConfig.from_env()
 
 
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("INGEST_MAX_BODY_BYTES", "9223372036854775808"),
+        ("INGEST_MAX_DECOMPRESSED_BYTES", "8589934592GiB"),
+        ("JS_MAX_BYTES", "9223372036854775808"),
+        ("QUARANTINE_MAX_BYTES", "8589934592GiB"),
+        ("GATE_MAX_PAST", "3000000h"),
+        pytest.param("GATE_MAX_PAST", "9" * 5000 + "h", id="duration-too-many-digits"),
+        ("GATE_MAX_FUTURE", "3000000h"),
+        ("JS_MAX_AGE", "3000000h"),
+        ("QUARANTINE_MAX_AGE", "3000000h"),
+        ("INGEST_MAX_INFLIGHT", "2147483648"),
+    ],
+)
+def test_rejects_oversized_parity_config(monkeypatch, name, value):
+    from ingest.main import IngestConfig
+    from jammy_common.config import ConfigError
+
+    for key, base in {
+        "SITE_ID": "test",
+        "NATS_URL": "nats://localhost",
+        "INGEST_STREAM": "raw",
+    }.items():
+        monkeypatch.setenv(key, base)
+    monkeypatch.setenv(name, value)
+    with pytest.raises(ConfigError, match=name):
+        IngestConfig.from_env()
+
+
 def test_ingest_config_validates_database_and_nats_url(monkeypatch):
     from ingest.main import IngestConfig, main
     from jammy_common.config import ConfigError
@@ -253,6 +283,18 @@ def test_ingest_config_validates_database_and_nats_url(monkeypatch):
     with pytest.raises(SystemExit) as exc:
         main()
     assert exc.value.code == "invalid DATABASE_URL"
+
+
+def test_ingest_config_rejects_invalid_stream_name(monkeypatch):
+    from ingest.main import IngestConfig
+    from jammy_common.config import ConfigError
+
+    monkeypatch.setenv("SITE_ID", "test")
+    monkeypatch.setenv("PIPELINE_MODE", "jetstream")
+    monkeypatch.setenv("NATS_URL", "nats://localhost")
+    monkeypatch.setenv("INGEST_STREAM", "raw.*")
+    with pytest.raises(ConfigError, match="invalid INGEST_STREAM"):
+        IngestConfig.from_env()
 
 
 def test_direct_db_refuses_more_workers_than_pool_connections(monkeypatch):

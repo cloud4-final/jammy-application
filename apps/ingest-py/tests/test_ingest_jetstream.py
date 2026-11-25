@@ -13,6 +13,8 @@ from ingest.sink_jetstream import JetStreamSink
 from jammy_common.pb.envelope_pb2 import Event, EventBatch
 from jammy_common.pb.profiles_pb2 import SynthLarge, SynthSmall
 from nats.js.api import StorageType
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
 from testcontainers.core.container import DockerContainer
 
 PROTOBUF = "application/x-protobuf"
@@ -54,9 +56,11 @@ def batch(*, rejected=False, all_rejected=False, blob=b""):
     return EventBatch(batch_id=uuid4().hex, producer_id="fixture", events=events)
 
 
-async def post(client, item, *, zipped=False, json_body=False):
+async def post(client, item, *, zipped=False, json_body=False, trace_headers=None):
     wire = MessageToJson(item).encode() if json_body else item.SerializeToString()
-    headers = {"Content-Type": "application/json" if json_body else PROTOBUF}
+    headers = {"Content-Type": "application/json" if json_body else PROTOBUF} | (
+        trace_headers or {}
+    )
     if zipped:
         wire = compress(wire)
         headers["Content-Encoding"] = "zstd"
@@ -165,6 +169,40 @@ def test_rejected_go_to_quarantine_with_reason(broker, monkeypatch):
         assert Event.FromString(message.data) == item.events[1]
 
     asyncio.run(js_case(broker, monkeypatch, check))
+
+
+def test_jetstream_messages_propagate_server_span(broker, monkeypatch):
+    provider = TracerProvider()
+    monkeypatch.setattr(trace, "get_tracer_provider", lambda: provider)
+
+    async def check(client, js, stream):
+        trace_id = "00000000000000000000000000000042"
+        parent_id = "0000000000000023"
+        response, _ = await post(
+            client,
+            batch(rejected=True),
+            trace_headers={
+                "traceparent": f"00-{trace_id}-{parent_id}-01",
+                "tracestate": "vendor=value",
+            },
+        )
+        assert response.status_code == 202
+        published = []
+        for name in (stream, f"quarantine-{stream}"):
+            message = await js.get_msg(name, seq=1)
+            version, received_trace_id, span_id, flags = message.headers[
+                "traceparent"
+            ].split("-")
+            assert (version, received_trace_id, flags) == ("00", trace_id, "01")
+            assert span_id != parent_id
+            assert message.headers["tracestate"] == "vendor=value"
+            published.append(span_id)
+        assert published[0] == published[1]
+
+    try:
+        asyncio.run(js_case(broker, monkeypatch, check))
+    finally:
+        provider.shutdown()
 
 
 @pytest.mark.parametrize("all_rejected", [False, True])
