@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -341,16 +342,26 @@ type rawMessage struct {
 	data       []byte
 	acked      bool
 	terminated bool
+	naked      bool
+	nakDelay   time.Duration
 }
 
-func (m *rawMessage) Headers() nats.Header { return m.headers }
-func (m *rawMessage) Data() []byte         { return m.data }
-func (m *rawMessage) Ack() error           { m.acked = true; return nil }
-func (m *rawMessage) Term() error          { m.terminated = true; return nil }
+func (m *rawMessage) Headers() nats.Header                 { return m.headers }
+func (m *rawMessage) Data() []byte                         { return m.data }
+func (m *rawMessage) Ack() error                           { m.acked = true; return nil }
+func (m *rawMessage) Term() error                          { m.terminated = true; return nil }
+func (m *rawMessage) Nak() error                           { m.naked = true; return nil }
+func (m *rawMessage) NakWithDelay(d time.Duration) error   { m.naked = true; m.nakDelay = d; return nil }
 
-type recordingStore struct{ batches []state.Batch }
+type recordingStore struct {
+	batches []state.Batch
+	err     error
+}
 
 func (s *recordingStore) Commit(_ context.Context, batches []state.Batch) ([]bool, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
 	s.batches = batches
 	return make([]bool, len(batches)), nil
 }
@@ -369,13 +380,15 @@ func TestProcessUsesIngestValidationAndLastReceiveTime(t *testing.T) {
 		headers.Set("Jammy-Received-At-Ms", strconv.Itoa(100+i))
 		messages = append(messages, &rawMessage{headers: headers, data: body})
 	}
-	results, received, err := Process(t.Context(), store, messages, func() { t.Fatal("unexpected poison message") })
-	if FailedCount(err) != 1 || len(results) != 2 || len(store.batches) != 2 || received.UnixMilli() != 102 {
-		t.Fatalf("results %v, batches %v, received %s, error %v", results, store.batches, received, err)
+	poison := 0
+	results, received, err := Process(t.Context(), store, messages, func() { poison++ })
+	if err != nil || poison != 1 || len(results) != 2 || len(store.batches) != 2 || received.UnixMilli() != 102 {
+		t.Fatalf("results %v, batches %v, received %s, poison %d, error %v", results, store.batches, received, poison, err)
 	}
 	for i, message := range messages {
-		if message.(*rawMessage).acked != (i != 1) {
-			t.Fatalf("wrong ACK status for message %d", i)
+		raw := message.(*rawMessage)
+		if raw.acked != (i != 1) || raw.terminated != (i == 1) {
+			t.Fatalf("wrong disposition for message %d: acked=%v terminated=%v", i, raw.acked, raw.terminated)
 		}
 	}
 }
@@ -388,5 +401,35 @@ func TestProcessTerminatesUndecodableBatch(t *testing.T) {
 	must(t, err)
 	if poison != 1 || !msg.terminated || msg.acked || len(results) != 0 || len(store.batches) != 0 {
 		t.Fatalf("poison=%d terminated=%v acked=%v results=%v stored=%v", poison, msg.terminated, msg.acked, results, store.batches)
+	}
+}
+
+func TestProcessTerminatesBatchIdMismatchWithoutDB(t *testing.T) {
+	body, err := proto.Marshal(&pb.EventBatch{BatchId: "expected", Events: []*pb.Event{{Profile: "synth-small", RoutingKey: "a"}}})
+	must(t, err)
+	msg := &rawMessage{
+		headers: nats.Header{"Content-Type": {"application/x-protobuf"}, "Nats-Msg-Id": {"different"}, "Jammy-Received-At-Ms": {"100"}},
+		data:    body,
+	}
+	store := &recordingStore{err: errors.New("should not touch DB")}
+	poison := 0
+	results, _, err := Process(t.Context(), store, []jetstream.Msg{msg}, func() { poison++ })
+	must(t, err)
+	if poison != 1 || !msg.terminated || msg.acked || msg.naked || len(results) != 0 {
+		t.Fatalf("poison=%d terminated=%v acked=%v naked=%v results=%v", poison, msg.terminated, msg.acked, msg.naked, results)
+	}
+}
+
+func TestProcessNaksWithBackoffOnTransientCommitError(t *testing.T) {
+	body, err := proto.Marshal(&pb.EventBatch{BatchId: "b1", Events: []*pb.Event{{Profile: "synth-small", RoutingKey: "a"}}})
+	must(t, err)
+	msg := &rawMessage{
+		headers: nats.Header{"Content-Type": {"application/x-protobuf"}, "Nats-Msg-Id": {"b1"}, "Jammy-Received-At-Ms": {"100"}},
+		data:    body,
+	}
+	store := &recordingStore{err: errors.New("db unavailable")}
+	_, _, err = Process(t.Context(), store, []jetstream.Msg{msg}, func() { t.Fatal("unexpected poison") })
+	if FailedCount(err) != 1 || !msg.naked || msg.nakDelay != time.Second || msg.terminated || msg.acked {
+		t.Fatalf("err=%v failed=%d naked=%v delay=%v term=%v ack=%v", err, FailedCount(err), msg.naked, msg.nakDelay, msg.terminated, msg.acked)
 	}
 }

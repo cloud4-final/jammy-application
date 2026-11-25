@@ -22,13 +22,78 @@ from jammy_common.config import (
 from jammy_common.logging import setup as setup_logging
 from jammy_common.write_fence import Fence, Fenced, write_connection, write_fence_age
 from nats.errors import Error as NatsError
+from opentelemetry import trace
+from opentelemetry.propagate import get_global_textmap
+from opentelemetry.propagators.textmap import Getter
+from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 from processor.anomaly import AnomalyDetector
 from processor.source_db import DbSource
 from processor.source_jetstream import JetStreamSource
 from processor.state import LatestState
 
 LOGGER = logging.getLogger(__name__)
-RETRY_ERRORS = (NatsError, psycopg.Error, TimeoutError, ValueError, KeyError)
+RETRY_ERRORS = (NatsError, psycopg.Error, TimeoutError)
+_TRACE_PROPAGATOR = TraceContextTextMapPropagator()
+
+
+class _HeaderGetter(Getter[dict[str, str]]):
+    def get(self, carrier: dict[str, str], key: str) -> list[str] | None:
+        if not carrier:
+            return None
+        if key in carrier:
+            return [carrier[key]]
+        lower = key.lower()
+        for k, v in carrier.items():
+            if k.lower() == lower:
+                return [v]
+        return None
+
+    def keys(self, carrier: dict[str, str]) -> list[str]:
+        return list(carrier.keys()) if carrier else []
+
+
+_HEADER_GETTER = _HeaderGetter()
+
+
+def _extract_context(headers: dict[str, str] | None):
+    if not headers:
+        return None
+    propagator = get_global_textmap()
+    if not propagator.fields:
+        propagator = _TRACE_PROPAGATOR
+    return propagator.extract(headers, getter=_HEADER_GETTER)
+
+
+def _start_batch_span(tracer: trace.Tracer, stream: str, messages):
+    parent = None
+    links = []
+    for message in messages:
+        headers = getattr(message, "headers", None)
+        extracted = _extract_context(headers)
+        if extracted is None:
+            continue
+        sc = trace.get_current_span(extracted).get_span_context()
+        if sc.is_valid:
+            if len(messages) == 1:
+                parent = extracted
+            else:
+                links.append(trace.Link(sc))
+    attributes = {
+        "messaging.system": "nats",
+        "messaging.destination.name": stream,
+        "messaging.batch.message_count": len(messages),
+    }
+    if len(messages) == 1:
+        headers = getattr(messages[0], "headers", None)
+        if batch_id := (_HEADER_GETTER.get(headers, "Nats-Msg-Id") if headers else None):
+            attributes["batch_id"] = batch_id[0]
+    return tracer.start_as_current_span(
+        "processor.commit",
+        context=parent,
+        kind=trace.SpanKind.CONSUMER,
+        attributes=attributes,
+        links=links,
+    )
 
 
 @dataclass(frozen=True)
@@ -38,6 +103,7 @@ class ProcessorConfig:
     streams: tuple[str, ...]
     ack_wait: int
     max_pending: int
+    max_deliver: int
     batch_size: int
     state_flush: int
     gate_max_past: timedelta
@@ -63,6 +129,7 @@ class ProcessorConfig:
             streams,
             positive_int("ACK_WAIT_SECONDS", 30),
             positive_int("MAX_ACK_PENDING", 1000),
+            positive_int("PROCESSOR_MAX_DELIVER", 10),
             positive_int("FETCH_BATCH", 64),
             positive_int("STATE_FLUSH_SECONDS", 1),
             past,
@@ -140,12 +207,20 @@ class Processor:
             try:
                 await asyncio.wait_for(stop.wait(), timeout=self.config.state_flush)
             except TimeoutError:
-                try:
-                    await self.state.flush(self.pool)
-                except Fenced:
-                    pass
-                except RETRY_ERRORS as error:
-                    LOGGER.warning("State flush will retry (%s)", type(error).__name__)
+                retry = False
+                with trace.get_tracer("jammy.processor").start_as_current_span(
+                    "processor.flush"
+                ) as span:
+                    try:
+                        await self.state.flush(self.pool)
+                    except Fenced:
+                        pass
+                    except RETRY_ERRORS as error:
+                        span.record_exception(error)
+                        span.set_status(trace.StatusCode.ERROR, str(error))
+                        LOGGER.warning("State flush will retry (%s)", type(error).__name__)
+                        retry = True
+                if retry:
                     await asyncio.sleep(1)
 
     def observe_stream(self, stream, pending, lag):
@@ -179,38 +254,51 @@ class Processor:
                     poisoned += 1
                     self.batches.add(1, {"result": "poison"})
 
-                try:
-                    readings, results, committed_lag = await source.commit(
-                        messages, record_poison
-                    )
-                except Fenced:
-                    self.batches.add(len(messages) - poisoned, {"result": "fenced"})
-                    await asyncio.sleep(1)
-                    continue
-                except RETRY_ERRORS as error:
-                    self.batches.add(len(messages) - poisoned, {"result": "error"})
-                    LOGGER.warning("Processing will retry (%s)", type(error).__name__)
-                    await asyncio.sleep(1)
-                    continue
-                if committed_lag is not None:
-                    lag = committed_lag
-                    self.duration.record(monotonic() - started)
-                    self.state.offer(readings)
-                for message, result in zip(messages, results, strict=True):
-                    if result == "poison":
-                        continue
-                    if result != "error":
-                        try:
-                            await message.ack()
-                        except NatsError:
-                            # Redelivery is safe because the claim is durable.
-                            pass
-                    self.batches.add(1, {"result": result})
-                if "error" in results:
-                    self.observe_stream(
-                        source.stream, self.pending_by_stream.get(source.stream, 0), lag
-                    )
-                    LOGGER.warning("JetStream batch contains invalid messages")
+                retry = False
+                with _start_batch_span(
+                    trace.get_tracer("jammy.processor"), source.stream, messages
+                ) as span:
+                    try:
+                        readings, results, committed_lag = await source.commit(
+                            messages, record_poison
+                        )
+                    except Fenced:
+                        self.batches.add(len(messages) - poisoned, {"result": "fenced"})
+                        retry = True
+                    except RETRY_ERRORS as error:
+                        span.record_exception(error)
+                        span.set_status(trace.StatusCode.ERROR, str(error))
+                        self.batches.add(len(messages) - poisoned, {"result": "error"})
+                        LOGGER.warning("Processing will retry (%s)", type(error).__name__)
+                        retry = True
+                    else:
+                        if committed_lag is not None:
+                            lag = committed_lag
+                            self.duration.record(monotonic() - started)
+                            self.state.offer(readings)
+                        for message, result in zip(messages, results, strict=True):
+                            if result == "poison":
+                                continue
+                            if result != "error":
+                                try:
+                                    await message.ack()
+                                except NatsError:
+                                    # Redelivery is safe because the claim is durable.
+                                    pass
+                            self.batches.add(1, {"result": result})
+                        if "error" in results:
+                            self.observe_stream(
+                                source.stream,
+                                self.pending_by_stream.get(source.stream, 0),
+                                lag,
+                            )
+                            span.set_status(
+                                trace.StatusCode.ERROR,
+                                "JetStream batch contains invalid messages",
+                            )
+                            LOGGER.warning("JetStream batch contains invalid messages")
+                            retry = True
+                if retry:
                     await asyncio.sleep(1)
                     continue
             try:
@@ -232,22 +320,34 @@ class Processor:
                 await asyncio.sleep(1)
                 continue
             started = monotonic()
-            try:
-                readings, lag = await source.poll()
-                self.lag.set(lag)
-                if readings:
-                    self.duration.record(monotonic() - started)
-                    self.batches.add(1, {"result": "ok"})
-                    self.state.offer(readings)
-                else:
-                    await asyncio.sleep(0.2)
-            except Fenced:
-                self.batches.add(1, {"result": "fenced"})
+            retry = False
+            idle = False
+            with trace.get_tracer("jammy.processor").start_as_current_span(
+                "processor.poll", kind=trace.SpanKind.CONSUMER
+            ) as span:
+                try:
+                    readings, lag = await source.poll()
+                    self.lag.set(lag)
+                    if readings:
+                        span.set_attribute("batch.events", len(readings))
+                        self.duration.record(monotonic() - started)
+                        self.batches.add(1, {"result": "ok"})
+                        self.state.offer(readings)
+                    else:
+                        idle = True
+                except Fenced:
+                    self.batches.add(1, {"result": "fenced"})
+                    retry = True
+                except RETRY_ERRORS as error:
+                    span.record_exception(error)
+                    span.set_status(trace.StatusCode.ERROR, str(error))
+                    self.batches.add(1, {"result": "error"})
+                    LOGGER.warning("Database poll will retry (%s)", type(error).__name__)
+                    retry = True
+            if retry:
                 await asyncio.sleep(1)
-            except RETRY_ERRORS as error:
-                self.batches.add(1, {"result": "error"})
-                LOGGER.warning("Database poll will retry (%s)", type(error).__name__)
-                await asyncio.sleep(1)
+            elif idle:
+                await asyncio.sleep(0.2)
 
     async def loop(self, stop):
         cfg = self.config
@@ -276,6 +376,7 @@ class Processor:
                         stream=stream,
                         ack_wait=cfg.ack_wait,
                         max_pending=cfg.max_pending,
+                        max_deliver=cfg.max_deliver,
                         **options,
                     )
                     tasks.create_task(self.consume(stop, source))
@@ -287,6 +388,7 @@ class Processor:
 
 
 async def serve(config, stop):
+    setup_logging("processor", config.common)
     pool = await db.pool(config.common, workers=1)
     fence = Fence(config.common.site_id, config.fence_age) if config.fence_age else None
     processor = Processor(config, pool, obs.setup("processor", config.common), fence=fence)
@@ -307,7 +409,6 @@ async def serve(config, stop):
 @config_error_exit
 def main() -> None:
     config = ProcessorConfig.from_env()
-    setup_logging("processor", config.common)
     lifecycle.run(lambda stop: serve(config, stop), config.common)
 
 

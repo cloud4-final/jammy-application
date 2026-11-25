@@ -52,3 +52,42 @@ def test_latest_state_coalesces_until_configured_flush(monkeypatch):
         assert not service.state.pending
 
     asyncio.run(run())
+
+
+def test_latest_state_equal_timestamp_uses_strict_less_than_on_offer_and_flush_retry():
+    from processor.state import LatestState
+
+    async def run():
+        t0 = datetime(2026, 11, 25, 10, 0, tzinfo=UTC)
+        state = LatestState()
+        state.offer(
+            [
+                Reading("solar", "a", t0, 10),
+                Reading("solar", "a", t0, 20),
+            ]
+        )
+        assert state.pending["a"].value == 10
+
+        cursor = AsyncMock()
+        pool = MagicMock()
+        conn = Mock()
+        pool.connection.return_value.__aenter__.return_value = conn
+        conn.cursor.return_value = MagicMock()
+        conn.cursor.return_value.__aenter__.return_value = cursor
+
+        async def fail_and_offer_newer(sql, _rows):
+            assert "WHERE latest_state.event_time < EXCLUDED.event_time" in sql
+            state.offer([Reading("solar", "a", t0, 99)])
+            raise RuntimeError("transient flush failure")
+
+        cursor.executemany.side_effect = fail_and_offer_newer
+        try:
+            await state.flush(pool)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("expected flush failure")
+
+        assert state.pending["a"].value == 99
+
+    asyncio.run(run())

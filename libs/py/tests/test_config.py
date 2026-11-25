@@ -69,6 +69,13 @@ def test_common_defaults(monkeypatch):
     assert (cfg.log_level, cfg.shutdown_timeout_s, cfg.pipeline_mode) == ("info", 25, "jetstream")
 
 
+def test_common_rejects_invalid_log_level(monkeypatch):
+    monkeypatch.setenv("SITE_ID", "site-a")
+    monkeypatch.setenv("LOG_LEVEL", "loud")
+    with pytest.raises(ConfigError, match="invalid LOG_LEVEL"):
+        CommonConfig.from_env()
+
+
 def test_rejects_unit_suffix_for_integer_seconds(monkeypatch):
     monkeypatch.setenv("SITE_ID", "site-a")
     monkeypatch.setenv("SHUTDOWN_TIMEOUT_SECONDS", "25s")

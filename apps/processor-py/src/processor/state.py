@@ -12,7 +12,7 @@ class LatestState:
     def offer(self, readings) -> None:
         for reading in readings:
             existing = self.pending.get(reading.routing_key)
-            if existing is None or existing.event_time <= reading.event_time:
+            if existing is None or existing.event_time < reading.event_time:
                 self.pending[reading.routing_key] = reading
 
     async def flush(self, pool) -> None:
@@ -30,7 +30,7 @@ class LatestState:
                            primary_value = EXCLUDED.primary_value,
                            event_time = EXCLUDED.event_time,
                            updated_at = now()
-                       WHERE latest_state.event_time <= EXCLUDED.event_time""",
+                       WHERE latest_state.event_time < EXCLUDED.event_time""",
                     [
                         (key, reading.profile, reading.value, reading.event_time)
                         for key, reading in sorted(samples.items())

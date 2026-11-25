@@ -40,6 +40,12 @@ An invalid value fails startup. The shared [environment fixtures](testdata/env_c
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Empty | No | An empty value disables trace and log export. |
 | `OTEL_RESOURCE_ATTRIBUTES` | Set by the chart | No | Includes `service.version` and `deployment.environment`. |
 
+The shared admin server returns `application/json` on `GET /readyz`. The response is
+`{"status":"ok","checks":{"postgres":"ok"}}` with HTTP 200 when all registered checks pass.
+Each check has a one-second timeout and reports `"ok"` or `"fail"`. Any failed or timed-out
+check sets the overall status to `"fail"` and returns HTTP 503. While draining, the server
+returns HTTP 503 with `{"status":"fail","checks":{}}`.
+
 AWS credentials use the SDK's standard provider chain. PostgreSQL is used by instruction-api, dispatcher, processor, portal-publisher, migrate, and direct-db ingest and archiver.
 
 ## instruction-api
@@ -97,6 +103,7 @@ JetStream uses file storage, 1 replica, discard-new, no stream compression, and 
 | `CONSUMER_NAME` | `processor` | No | Consumer and batch deduplication owner. |
 | `ACK_WAIT_SECONDS` | `30` | No | JetStream acknowledgement deadline. |
 | `MAX_ACK_PENDING` | `1000` | No | JetStream consumer pending limit. |
+| `PROCESSOR_MAX_DELIVER` | `10` | No | Maximum JetStream delivery attempts per message before the broker stops redelivering it. |
 | `FETCH_BATCH` | `64` | No | JetStream fetch batch size. |
 | `STATE_FLUSH_SECONDS` | `1` | No | Latest-state upsert interval. |
 | `GATE_MAX_PAST` | `24h` | No | Partition lookback. |
