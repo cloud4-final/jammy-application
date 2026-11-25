@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cloud4-final/jammy-5th/apps/archiver-go/internal/pq"
+	"github.com/cloud4-final/jammy-application/apps/archiver-go/internal/pq"
 )
 
 type memoryObjects struct {

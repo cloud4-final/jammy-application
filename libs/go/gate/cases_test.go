@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cloud4-final/jammy-5th/libs/go/codec"
-	"github.com/cloud4-final/jammy-5th/libs/go/gate"
+	"github.com/cloud4-final/jammy-application/libs/go/codec"
+	"github.com/cloud4-final/jammy-application/libs/go/gate"
 )
 
 func TestGateCases(t *testing.T) {

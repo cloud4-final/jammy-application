@@ -10,7 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/cloud4-final/jammy-5th/libs/go/config"
+	"github.com/cloud4-final/jammy-application/libs/go/config"
 )
 
 // NormalizePrefix trims leading and trailing slashes and appends a single
