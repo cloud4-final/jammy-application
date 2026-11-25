@@ -59,3 +59,40 @@ def test_fifo_drain_only_receives_as_holder_and_deletes_after_committing_expired
         client.delete_message.assert_not_called()
 
     asyncio.run(exercise())
+
+
+def test_sqs_drain_treats_nul_bytes_as_invalid_without_querying_postgres():
+    async def exercise():
+        for payload in (
+            {
+                "instruction_id": "bad\0id",
+                "target_reduction_kw": "12.500",
+                "valid_from": "2026-11-23T01:00:00Z",
+                "valid_until": "2026-11-23T02:00:00Z",
+            },
+            {
+                "instruction_id": "ok-id",
+                "target_reduction_kw": "12.500",
+                "valid_from": "2026-11-23T01:00:00Z",
+                "valid_until": "2026-11-23T02:00:00Z",
+                "routing_keys": ["solar\0-1"],
+            },
+        ):
+            client = Mock()
+            client.receive_message.return_value = {
+                "Messages": [{"Body": json.dumps(payload), "ReceiptHandle": "receipt"}]
+            }
+            conn = AsyncMock()
+            counter = Mock()
+            drain = SQSDrain(client, "https://queue.example/instructions", counter)
+
+            @asynccontextmanager
+            async def transaction(db_conn=conn):
+                yield db_conn
+
+            assert await drain.drain_once(transaction, AsyncMock(return_value=LeaseState(True, 1)))
+            conn.execute.assert_not_awaited()
+            client.delete_message.assert_not_called()
+            counter.add.assert_called_once_with(1, {"result": "invalid"})
+
+    asyncio.run(exercise())

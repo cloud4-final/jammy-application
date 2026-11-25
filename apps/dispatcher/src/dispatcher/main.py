@@ -19,6 +19,7 @@ from jammy_common.config import (
     env_ratio,
 )
 from psycopg import Error
+from psycopg_pool import PoolTimeout
 
 from .commands import Dispatcher
 from .compliance import check_compliance
@@ -34,6 +35,22 @@ ERROR_BACKOFF_SECONDS = 1
 
 def _tolerance() -> Decimal:
     return env_ratio("COMPLIANCE_TOLERANCE", "0.05", Decimal)
+
+
+async def _postgres_ready(pool, leader: Leader) -> bool:
+    if pool.max_size > 1:
+        return await db.ping(pool)
+    if (held := await leader.ping()) is not None:
+        return held
+    try:
+        async with pool.connection(timeout=0.5) as conn, conn.transaction():
+            await conn.execute("SET LOCAL statement_timeout = '1s'")
+            await conn.execute("SELECT 1")
+        return True
+    except PoolTimeout:
+        if (held := await leader.ping()) is not None:
+            return held
+        return False
 
 
 async def _renew(stop, requested, dispatcher):
@@ -94,7 +111,7 @@ async def serve(stop: asyncio.Event, cfg: CommonConfig) -> None:
     leader_gauge = meter.create_gauge("jammy_dispatcher_is_leader")
     lease_gauge = meter.create_gauge("jammy_dispatcher_lease_active")
 
-    checks = {"postgres": lambda: db.ping(pool), "lease": lease.ready}
+    checks = {"postgres": lambda: _postgres_ready(pool, leader), "lease": lease.ready}
     if sqs is not None:
         checks["sqs"] = sqs.ready
     admin = AdminServer(cfg.admin_port, checks)

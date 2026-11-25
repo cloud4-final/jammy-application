@@ -193,6 +193,31 @@ def test_readyz_does_not_wait_for_leader_transaction(dsn):
     asyncio.run(exercise(free_port()))
 
 
+def test_readyz_checks_postgres_with_single_pool_connection(dsn):
+    async def exercise(port):
+        holder = "dispatcher-single-pool"
+        async with (
+            dispatcher_process(
+                dsn, "http://127.0.0.1:1", port, DB_POOL_MAX="1", INSTANCE_ID=holder
+            ),
+            await psycopg.AsyncConnection.connect(dsn, autocommit=True) as observer,
+            httpx.AsyncClient() as client,
+        ):
+            async with asyncio.timeout(15):
+                while True:
+                    cursor = await observer.execute(
+                        "SELECT holder FROM jammy.leader_generation WHERE name = 'dispatcher'"
+                    )
+                    if await cursor.fetchone() == (holder,):
+                        break
+                    await asyncio.sleep(0.05)
+            response = await client.get(f"http://127.0.0.1:{port}/readyz")
+            assert response.status_code == 200
+            assert response.json()["checks"]["postgres"] == "ok"
+
+    asyncio.run(exercise(free_port()))
+
+
 @pytest.mark.parametrize("stalled", [{"lease"}, {"sqs"}, {"lease", "sqs"}])
 def test_readyz_bounds_stalled_aws_checks(stalled):
     class Table:
