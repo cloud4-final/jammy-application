@@ -7,6 +7,7 @@ from contextlib import contextmanager
 
 import uvicorn
 from fastapi import FastAPI, Response
+from fastapi.responses import JSONResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from .obs import REGISTRY
@@ -31,7 +32,7 @@ class _Server(uvicorn.Server):
 class AdminServer:
     def __init__(self, port: int, checks: dict[str, Callable[[], Awaitable[bool]]]) -> None:
         self.port = port
-        self._checks = checks
+        self._checks = checks.copy()
         self._draining = False
         app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
         app.add_api_route("/livez", self._livez, methods=["GET"])
@@ -80,14 +81,25 @@ class AdminServer:
         return Response("ok", status_code=200)
 
     async def _readyz(self) -> Response:
-        if not self._draining:
+        async def check_status(check: Callable[[], Awaitable[bool]]) -> str:
             try:
-                results = await asyncio.gather(*(check() for check in self._checks.values()))
+                async with asyncio.timeout(1) as timeout:
+                    healthy = await check()
             except Exception:  # noqa: BLE001 - Dependency failures make the service unready.
-                return Response("unavailable", status_code=503)
-            if not self._draining and all(results):
-                return Response("ok", status_code=200)
-        return Response("unavailable", status_code=503)
+                return "fail"
+            return "ok" if healthy and not timeout.expired() else "fail"
+
+        checks = {}
+        if not self._draining:
+            results = await asyncio.gather(*(check_status(check) for check in self._checks.values()))
+            checks = dict(zip(self._checks, results, strict=True))
+        if self._draining:
+            return JSONResponse({"status": "fail", "checks": {}}, status_code=503)
+        ready = "fail" not in checks.values()
+        return JSONResponse(
+            {"status": "ok" if ready else "fail", "checks": checks},
+            status_code=200 if ready else 503,
+        )
 
     async def _metrics(self) -> Response:
         return Response(generate_latest(REGISTRY), headers={"Content-Type": CONTENT_TYPE_LATEST})
