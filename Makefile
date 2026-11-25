@@ -171,9 +171,34 @@ seed:
 IMPL ?= go
 ARM ?= mvp
 
-py-test go-test:
-	@echo "not implemented yet"
-	@exit 1
+go-test:
+	@pkgs=$$(go list ./...); \
+	if [ -n "$$pkgs" ]; then go test -race ./...; fi
+
+py-test:
+	@set -eu; \
+	for entry in \
+		"jammy-common:libs/py" \
+		"instruction-api:apps/instruction-api" \
+		"dispatcher:apps/dispatcher" \
+		"portal-publisher:apps/portal-publisher" \
+		"ingest-py:apps/ingest-py" \
+		"processor-py:apps/processor-py" \
+		"archiver-py:apps/archiver-py" \
+		"dispatcher:deploy/compose/aws:scripts"; do \
+		pkg=$${entry%%:*}; rest=$${entry#*:}; dir=$${rest%%:*}; \
+		paths="$$dir"; \
+		if [ "$$rest" != "$$dir" ]; then \
+			[ -f "$$dir/test_init_aws.py" ] || continue; \
+			paths="$$dir $${rest#*:}"; \
+		else \
+			[ -f "$$dir/pyproject.toml" ] || continue; \
+		fi; \
+		uvx --python 3.14.10 ruff@0.16.10 check --target-version py314 $$paths; \
+		uv run --frozen --python 3.14.10 --package "$$pkg" \
+			--with pytest==9.1.1 --with testcontainers==4.14.2 --with httpx==0.28.1 \
+			pytest $$paths; \
+	done
 
 HELM_CHART := deploy/helm/jammy-platform
 HELM_TEST_VALUES := $(HELM_CHART)/tests/site-values.yaml

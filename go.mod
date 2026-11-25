@@ -1,4 +1,4 @@
-module github.com/cloud4-final/jammy-5th
+module github.com/cloud4-final/jammy-application
 
 go 1.27
 

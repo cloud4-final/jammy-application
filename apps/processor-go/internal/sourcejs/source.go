@@ -7,10 +7,10 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/cloud4-final/jammy-5th/apps/processor-go/internal/aggregate"
-	"github.com/cloud4-final/jammy-5th/apps/processor-go/internal/state"
-	"github.com/cloud4-final/jammy-5th/libs/go/codec"
-	"github.com/cloud4-final/jammy-5th/libs/go/gate"
+	"github.com/cloud4-final/jammy-application/apps/processor-go/internal/aggregate"
+	"github.com/cloud4-final/jammy-application/apps/processor-go/internal/state"
+	"github.com/cloud4-final/jammy-application/libs/go/codec"
+	"github.com/cloud4-final/jammy-application/libs/go/gate"
 	"github.com/nats-io/nats.go/jetstream"
 )
 

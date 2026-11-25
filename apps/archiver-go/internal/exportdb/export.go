@@ -8,9 +8,9 @@ import (
 	"slices"
 	"time"
 
-	"github.com/cloud4-final/jammy-5th/apps/archiver-go/internal/pq"
-	"github.com/cloud4-final/jammy-5th/apps/archiver-go/internal/seal"
-	"github.com/cloud4-final/jammy-5th/libs/go/s3x"
+	"github.com/cloud4-final/jammy-application/apps/archiver-go/internal/pq"
+	"github.com/cloud4-final/jammy-application/apps/archiver-go/internal/seal"
+	"github.com/cloud4-final/jammy-application/libs/go/s3x"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"

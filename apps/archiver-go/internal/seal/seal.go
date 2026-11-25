@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cloud4-final/jammy-5th/apps/archiver-go/internal/pq"
-	"github.com/cloud4-final/jammy-5th/libs/go/s3x"
+	"github.com/cloud4-final/jammy-application/apps/archiver-go/internal/pq"
+	"github.com/cloud4-final/jammy-application/libs/go/s3x"
 )
 
 func Eligible(hour, watermark time.Time, lateness time.Duration, direct bool) bool {
