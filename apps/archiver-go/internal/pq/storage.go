@@ -20,7 +20,7 @@ import (
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
-	"github.com/cloud4-final/jammy-5th/apps/archiver-go/internal/ratelimit"
+	"github.com/cloud4-final/jammy-application/apps/archiver-go/internal/ratelimit"
 	"github.com/parquet-go/parquet-go"
 )
 

@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/cloud4-final/jammy-5th/apps/archiver-go/internal/pq"
-	"github.com/cloud4-final/jammy-5th/apps/archiver-go/internal/seal"
+	"github.com/cloud4-final/jammy-application/apps/archiver-go/internal/pq"
+	"github.com/cloud4-final/jammy-application/apps/archiver-go/internal/seal"
 )
 
 func (a *Archiver) covered(ctx context.Context, key group, seq uint64) (bool, error) {
