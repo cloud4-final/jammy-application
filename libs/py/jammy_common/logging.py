@@ -11,8 +11,8 @@ from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.trace import get_current_span
 
 from . import lifecycle
-from .config import CommonConfig, env, parse_log_level
-from .obs import _resource
+from .config import CommonConfig, parse_log_level
+from .obs import _resource, otlp_endpoint
 
 
 class _JsonFormatter(logging.Formatter):
@@ -44,13 +44,15 @@ class _OTLPHandler(LoggingHandler):
 
 
 def setup(service: str, cfg: CommonConfig) -> None:
+    level = parse_log_level(cfg.log_level)
+    endpoint = otlp_endpoint()
     formatter = _JsonFormatter(service, cfg)
     console = logging.StreamHandler(sys.stdout)
     console.setFormatter(formatter)
 
-    logging.basicConfig(level=parse_log_level(cfg.log_level), handlers=[console], force=True)
+    logging.basicConfig(level=level, handlers=[console], force=True)
 
-    if endpoint := env("OTEL_EXPORTER_OTLP_ENDPOINT"):
+    if endpoint:
         provider = LoggerProvider(resource=_resource(service, cfg), shutdown_on_exit=False)
         provider.add_log_record_processor(BatchLogRecordProcessor(OTLPLogExporter(endpoint=endpoint)))
         handler = _OTLPHandler(logger_provider=provider)
