@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cloud4-final/jammy-5th/libs/go/config"
-	"github.com/cloud4-final/jammy-5th/libs/go/logx"
+	"github.com/cloud4-final/jammy-application/libs/go/config"
+	"github.com/cloud4-final/jammy-application/libs/go/logx"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"

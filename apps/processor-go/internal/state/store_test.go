@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cloud4-final/jammy-5th/apps/processor-go/internal/aggregate"
+	"github.com/cloud4-final/jammy-application/apps/processor-go/internal/aggregate"
 )
 
 func TestCoalesceLatestEqualTimestampUsesStrictLessThan(t *testing.T) {
