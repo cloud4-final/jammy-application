@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"time"
 
-	pb "github.com/cloud4-final/jammy-5th/libs/go/pb/jammyv1"
+	pb "github.com/cloud4-final/jammy-application/libs/go/pb/jammyv1"
 	"github.com/klauspost/compress/zstd"
 	"google.golang.org/protobuf/proto"
 )

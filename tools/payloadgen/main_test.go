@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cloud4-final/jammy-5th/tools/payloadgen/gen"
+	"github.com/cloud4-final/jammy-application/tools/payloadgen/gen"
 )
 
 func TestRunAssetsWritesSeedSQL(t *testing.T) {
