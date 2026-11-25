@@ -11,12 +11,13 @@ POSTGRES_IMAGE := postgres:17.12-trixie
 MIGRATE_IMAGE := migrate/migrate:v4.20.1
 REDOCLY_IMAGE := redocly/cli:2.54.3
 PROTO_OUT ?= .
+PROTO_BASE ?= main
 
 GO_PROTO_DIR := libs/go/pb/jammyv1
 PY_PROTO_DIR := libs/py/jammy_common/pb
 E2E_PROTO_DIR := tests/e2e/pb
 
-.PHONY: proto contracts-check proto-lint proto-check migrations-check openapi-check
+.PHONY: proto contracts-check proto-lint proto-breaking proto-check migrations-check openapi-check
 .PHONY: py-test go-test up-mvp up-split up-obs down seed e2e helm-test
 
 proto:
@@ -28,12 +29,27 @@ proto:
 
 contracts-check:
 	$(MAKE) proto-lint
+	$(MAKE) proto-breaking
 	$(MAKE) proto-check
 	$(MAKE) migrations-check
 	$(MAKE) openapi-check
 
 proto-lint:
 	$(BUF) lint
+
+proto-breaking:
+	@set -eu; \
+	base=$$(git rev-parse --verify "$(PROTO_BASE)^{commit}"); \
+	if ! git cat-file -e "$$base:contracts/proto" 2>/dev/null; then \
+		echo "No Protobuf baseline at $(PROTO_BASE):contracts/proto"; \
+		exit 0; \
+	fi; \
+	tmp=$$(mktemp -d .proto-breaking.XXXXXXXX); \
+	trap 'rm -rf "$$tmp"' EXIT; \
+	git archive --output "$$tmp/baseline.tar" "$$base:contracts/proto"; \
+	tar -xf "$$tmp/baseline.tar" -C "$$tmp"; \
+	rm "$$tmp/baseline.tar"; \
+	$(BUF) breaking --against "$$tmp"
 
 # Keep regeneration output visible through the Docker workspace mount.
 proto-check:

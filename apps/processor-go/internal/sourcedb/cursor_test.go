@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cloud4-final/jammy-5th/apps/processor-go/internal/aggregate"
 	"github.com/cloud4-final/jammy-5th/apps/processor-go/internal/state"
 	"github.com/cloud4-final/jammy-5th/libs/go/leasefence"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -134,6 +135,28 @@ func TestDBModeCursorProgressExact(t *testing.T) {
 	guarded = state.New(pool, "processor", 24*time.Hour, .5, leasefence.New("site-a", 10*time.Second))
 	if count, _, err := Poll(ctx, guarded, 1); count != 1 || err != nil {
 		t.Fatalf("fresh DB poll returned %d, %v", count, err)
+	}
+
+	// Same-xid multi-row insert advances strictly by (ingest_xid, event_id) > (last_xid, last_event_id).
+	_, err = pool.Exec(ctx, `INSERT INTO jammy.raw_events
+		(event_id, routing_key, profile, schema_version, event_time, received_at, ingest_id, primary_value, payload)
+		VALUES ('same-xid-a', 'fixture', 'synth-small', 1, now(), $1, 'fixture', 1, ''::bytea),
+		       ('same-xid-b', 'fixture', 'synth-small', 1, now(), $1, 'fixture', 1, ''::bytea)`, hour)
+	check(err)
+	poll(1)
+	poll(1)
+	poll(0)
+
+	// latest_state boundary: equal event_time must not overwrite via WHERE latest_state.event_time < EXCLUDED.event_time.
+	tBoundary := hour.Add(10 * time.Minute)
+	store.CoalesceLatest([]aggregate.Event{{Profile: "synth-small", RoutingKey: "boundary", Time: tBoundary, Value: 42}})
+	check(store.FlushLatest(ctx))
+	store.CoalesceLatest([]aggregate.Event{{Profile: "synth-small", RoutingKey: "boundary", Time: tBoundary, Value: 99}})
+	check(store.FlushLatest(ctx))
+	var boundaryVal float64
+	check(pool.QueryRow(ctx, "SELECT primary_value FROM jammy.latest_state WHERE routing_key='boundary'").Scan(&boundaryVal))
+	if boundaryVal != 42 {
+		t.Fatalf("equal event_time overwrote latest_state: got %g, want 42", boundaryVal)
 	}
 
 	t.Run("cursor index in generic plan", func(t *testing.T) {

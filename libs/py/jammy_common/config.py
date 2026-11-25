@@ -15,6 +15,23 @@ class ConfigError(ValueError):
     """An environment setting is missing or invalid."""
 
 
+def parse_log_level(value: str) -> int:
+    # Go's slog accepts a case-insensitive base level and a signed decimal offset.
+    match = re.fullmatch(r"(debug|info|warn|error)([+-][0-9]+)?", value, re.IGNORECASE | re.ASCII)
+    if match is None:
+        raise ConfigError("invalid LOG_LEVEL")
+    base, offset = match.groups()
+    try:
+        delta = int(offset or "0")
+    except ValueError:
+        raise ConfigError("invalid LOG_LEVEL") from None
+    if not -(1 << 63) <= delta < (1 << 63):
+        raise ConfigError("invalid LOG_LEVEL")
+    level = {"debug": -4, "info": 0, "warn": 4, "error": 8}[base.lower()] + delta
+    # Map slog's four-unit intervals to the standard Python ten-unit intervals.
+    return 20 + (5 * level + 1) // 2
+
+
 def config_error_exit(main: Callable[[], None]) -> Callable[[], None]:
     """Print startup configuration errors and exit with status 1."""
     @wraps(main)
@@ -158,6 +175,8 @@ class CommonConfig:
 
     @classmethod
     def from_env(cls) -> CommonConfig:
+        log_level = env("LOG_LEVEL", "info").lower()
+        parse_log_level(log_level)
         pipeline_mode = env("PIPELINE_MODE", "jetstream")
         if pipeline_mode not in {"jetstream", "direct-db"}:
             raise ConfigError("PIPELINE_MODE must be jetstream or direct-db")
@@ -167,7 +186,7 @@ class CommonConfig:
             instance_id=env("INSTANCE_ID", socket.gethostname(), required=True),
             http_port=_port("HTTP_PORT", 8080),
             admin_port=_port("ADMIN_PORT", 9090),
-            log_level=env("LOG_LEVEL", "info").lower(),
+            log_level=log_level,
             shutdown_timeout_s=env_duration("SHUTDOWN_TIMEOUT_SECONDS", "25"),
             pipeline_mode=pipeline_mode,
         )

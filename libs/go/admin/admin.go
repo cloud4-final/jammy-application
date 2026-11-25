@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"maps"
@@ -60,19 +61,49 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 func (s *Server) readyz(w http.ResponseWriter, r *http.Request) {
-	if s.draining.Load() {
-		w.WriteHeader(http.StatusServiceUnavailable)
-		return
+	checks := make(map[string]string, len(s.checks))
+	if !s.draining.Load() {
+		ctx, cancel := context.WithTimeout(r.Context(), time.Second)
+		defer cancel()
+		healthy := make(chan string, len(s.checks))
+		done := make(chan struct{}, len(s.checks))
+		for name, check := range s.checks {
+			checks[name] = "fail"
+			go func() {
+				if check(ctx) && ctx.Err() == nil {
+					healthy <- name
+				}
+				done <- struct{}{}
+			}()
+		}
+	wait:
+		for range s.checks {
+			select {
+			case <-done:
+			case <-ctx.Done():
+				break wait
+			}
+		}
+		for range len(healthy) {
+			checks[<-healthy] = "ok"
+		}
 	}
-	for _, check := range s.checks {
-		if !check(r.Context()) {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			return
+
+	status, code := "ok", http.StatusOK
+	for _, result := range checks {
+		if result == "fail" {
+			status, code = "fail", http.StatusServiceUnavailable
+			break
 		}
 	}
 	if s.draining.Load() {
-		w.WriteHeader(http.StatusServiceUnavailable)
-		return
+		status, code = "fail", http.StatusServiceUnavailable
+		clear(checks)
 	}
-	w.WriteHeader(http.StatusOK)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(struct {
+		Status string            `json:"status"`
+		Checks map[string]string `json:"checks"`
+	}{status, checks})
 }

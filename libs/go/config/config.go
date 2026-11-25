@@ -20,7 +20,7 @@ type Common struct {
 
 // Lookup reads a setting using the file override when present.
 func Lookup(name, fallback string) (string, error) {
-	if path, ok := os.LookupEnv(name + "_FILE"); ok {
+	if path := os.Getenv(name + "_FILE"); path != "" {
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return "", fmt.Errorf("%s_FILE: cannot read setting", name)

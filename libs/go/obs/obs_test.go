@@ -11,10 +11,36 @@ import (
 	"github.com/cloud4-final/jammy-5th/libs/go/admin"
 	"github.com/cloud4-final/jammy-5th/libs/go/config"
 	"github.com/cloud4-final/jammy-5th/libs/go/obs"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
+
+func TestSetupPropagatesTraceContextAndBaggage(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	previous := otel.GetTextMapPropagator()
+	t.Cleanup(func() { otel.SetTextMapPropagator(previous) })
+	_, shutdown, err := obs.Setup("ingest", config.Common{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = shutdown(context.Background()) })
+	input := propagation.MapCarrier{
+		"traceparent": "00-00000000000000000000000000000042-0000000000000023-01",
+		"baggage":     "site=site-a",
+	}
+	propagator := otel.GetTextMapPropagator()
+	ctx := propagator.Extract(context.Background(), input)
+	output := propagation.MapCarrier{}
+	propagator.Inject(ctx, output)
+	for key, value := range input {
+		if output[key] != value {
+			t.Errorf("%s = %q, want %q", key, output[key], value)
+		}
+	}
+}
 
 func TestMetricsDurationBuckets(t *testing.T) {
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")

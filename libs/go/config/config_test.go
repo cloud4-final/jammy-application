@@ -21,6 +21,15 @@ func TestEnvFileOverrides(t *testing.T) {
 	}
 }
 
+func TestEmptyFileOverrideFallsBack(t *testing.T) {
+	t.Setenv("SITE_ID_FILE", "")
+	t.Setenv("SITE_ID", "site-a")
+	got, err := Lookup("SITE_ID", "fallback")
+	if err != nil || got != "site-a" {
+		t.Fatalf("Lookup(SITE_ID) = %q, %v", got, err)
+	}
+}
+
 func TestLoadCommon(t *testing.T) {
 	t.Setenv("SITE_ID", "site-a")
 	t.Setenv("INSTANCE_ID", "ingest-a1")

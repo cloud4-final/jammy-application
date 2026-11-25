@@ -93,15 +93,39 @@ def insert_raw(conn, event_id, received):
     )
 
 
-def test_db_mode_cursor_progress_exact():
+def test_db_mode_cursor_progress_exact(monkeypatch):
     with database() as dsn:
         stamp = datetime.now(UTC)
-        for index in range(3):
-            with psycopg.connect(dsn) as conn:
-                insert_raw(conn, f"event-{index}", stamp)
-            with running_processor(dsn, FETCH_BATCH="1"):
-                until(lambda expected=index + 1: summary_rows(dsn) == expected)
+        with psycopg.connect(dsn) as conn:
+            insert_raw(conn, "event-0", stamp)
+        with psycopg.connect(dsn) as conn:
+            insert_raw(conn, "event-1", stamp)
+            insert_raw(conn, "event-2", stamp)
+        with running_processor(dsn, FETCH_BATCH="1"):
+            until(lambda: summary_rows(dsn) == 3)
         assert summary_rows(dsn) == 3
+
+        from processor.aggregate import Reading
+        from processor.state import LatestState
+
+        async def check_latest_boundary():
+            monkeypatch.setenv("DATABASE_URL", dsn)
+            monkeypatch.setenv("SITE_ID", "fixture")
+            pool = await db.pool(CommonConfig.from_env(), workers=1)
+            try:
+                latest = LatestState()
+                latest.offer([Reading("synth-small", "boundary", stamp, 42.0)])
+                await latest.flush(pool)
+                latest.offer([Reading("synth-small", "boundary", stamp, 99.0)])
+                await latest.flush(pool)
+            finally:
+                await pool.close()
+
+        asyncio.run(check_latest_boundary())
+        with psycopg.connect(dsn) as conn:
+            assert conn.execute(
+                "SELECT primary_value FROM jammy.latest_state WHERE routing_key = 'boundary'"
+            ).fetchone() == (42.0,)
 
 
 def test_db_mode_late_commit_not_skipped():

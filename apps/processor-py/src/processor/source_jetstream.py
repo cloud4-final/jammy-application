@@ -46,6 +46,7 @@ class JetStreamSource:
         max_pending,
         batch_size,
         detector,
+        max_deliver=10,
         fence=None,
     ):
         self.pool = pool
@@ -54,6 +55,7 @@ class JetStreamSource:
         self.stream = stream
         self.ack_wait = ack_wait
         self.max_pending = max_pending
+        self.max_deliver = max_deliver
         self.batch_size = batch_size
         self.detector = detector
         self.fence = fence
@@ -71,6 +73,7 @@ class JetStreamSource:
                 ack_policy=AckPolicy.EXPLICIT,
                 ack_wait=self.ack_wait,
                 max_ack_pending=self.max_pending,
+                max_deliver=self.max_deliver,
                 filter_subject=subject,
             ),
         )
@@ -104,9 +107,7 @@ class JetStreamSource:
             try:
                 batch, received = decode_message(message)
                 samples = [Reading.from_event(event) for event in batch.events]
-            except BatchIdMismatch:
-                continue
-            except ValueError, OverflowError:
+            except BatchIdMismatch, ValueError, OverflowError, TypeError, KeyError:
                 try:
                     await message.term()
                 except NatsError:
@@ -119,23 +120,31 @@ class JetStreamSource:
             return [], results, None
 
         readings = []
-        async with write_connection(self.pool, self.fence) as conn:
-            for index in sorted(decoded, key=lambda i: decoded[i][0]):
-                batch_id, _, _ = decoded[index]
-                claim = await conn.execute(
-                    """INSERT INTO jammy.processed_batches (consumer, batch_id)
-                       VALUES (%s, %s) ON CONFLICT DO NOTHING RETURNING 1""",
-                    (self.consumer, batch_id),
-                )
-                results[index] = (
-                    "ok" if await claim.fetchone() is not None else "duplicate"
-                )
-            for index, (_, _, samples) in decoded.items():
-                if results[index] == "ok":
-                    readings.extend(samples)
-            buckets = fold(readings)
-            await upsert(conn, buckets)
-            await self.detector.write(conn, readings, buckets)
+        try:
+            async with write_connection(self.pool, self.fence) as conn:
+                for index in sorted(decoded, key=lambda i: decoded[i][0]):
+                    batch_id, _, _ = decoded[index]
+                    claim = await conn.execute(
+                        """INSERT INTO jammy.processed_batches (consumer, batch_id)
+                           VALUES (%s, %s) ON CONFLICT DO NOTHING RETURNING 1""",
+                        (self.consumer, batch_id),
+                    )
+                    results[index] = (
+                        "ok" if await claim.fetchone() is not None else "duplicate"
+                    )
+                for index, (_, _, samples) in decoded.items():
+                    if results[index] == "ok":
+                        readings.extend(samples)
+                buckets = fold(readings)
+                await upsert(conn, buckets)
+                await self.detector.write(conn, readings, buckets)
+        except BaseException:
+            for index in decoded:
+                try:
+                    await messages[index].nak(delay=1)
+                except NatsError:
+                    pass
+            raise
         last_received = next(reversed(decoded.values()))[1]
         return (
             readings,
