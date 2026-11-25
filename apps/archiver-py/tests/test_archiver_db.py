@@ -258,3 +258,95 @@ def test_direct_db_seal_uses_exported_hours_and_routes_late_rows(tmp_path, s3_fi
             until(lambda: dropped(late_name))
             assert rows(client, bucket, "raw-late/") == ["late"]
             assert get(client, bucket, seal_key) == original
+
+
+def test_has_unprocessed_avoids_partition_scan():
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    async def run():
+        empty_conn = SimpleNamespace(execute=AsyncMock())
+        assert not await DbArchive._has_unprocessed(empty_conn, (1, "0", "", 0))
+        empty_conn.execute.assert_not_awaited()
+
+        cursor_result = SimpleNamespace(fetchone=AsyncMock(return_value=(True,)))
+        conn = SimpleNamespace(execute=AsyncMock(return_value=cursor_result))
+        assert await DbArchive._has_unprocessed(conn, (1, "42", "ev-1", 5))
+        query, params = conn.execute.await_args.args
+        assert "raw_events" not in query
+        assert "pg_snapshot_xmin(pg_current_snapshot())" in query
+        assert params == ("42", "ev-1", "42")
+
+    asyncio.run(run())
+
+
+def test_db_mode_blocks_drop_until_all_cursors_and_xmin_advance(tmp_path, s3_fixture):
+    client, bucket, _options = s3_fixture
+    hour = (datetime.now(UTC) - timedelta(hours=3)).replace(
+        minute=0, second=0, microsecond=0
+    )
+    name = hour.strftime("raw_events_%Y%m%d%H")
+    with PostgresContainer("postgres:17.12-trixie", driver=None) as container:
+        dsn = container.get_connection_url()
+        with psycopg.connect(dsn) as conn:
+            for migration in sorted(MIGRATIONS.glob("*.up.sql")):
+                conn.execute(migration.read_text())
+            conn.execute(
+                sql.SQL(
+                    "CREATE TABLE {} PARTITION OF jammy.raw_events FOR VALUES FROM ({}) TO ({})"
+                ).format(
+                    sql.Identifier("jammy", name),
+                    sql.Literal(hour),
+                    sql.Literal(hour + timedelta(hours=1)),
+                )
+            )
+        with psycopg.connect(dsn, autocommit=False) as inflight:
+            # Hold an older xid open so pg_snapshot_xmin stays <= the inserted row's xid.
+            inflight.execute("SELECT pg_current_xact_id()").fetchone()
+            with psycopg.connect(dsn) as conn:
+                row_xid = conn.execute(
+                    """INSERT INTO jammy.raw_events
+                       (event_id, routing_key, profile, schema_version, event_time, received_at,
+                        ingest_id, primary_value, payload)
+                       VALUES ('db-event', 'asset', 'synth-small', 1, %s, %s, 'fixture', 7, ''::bytea)
+                       RETURNING ingest_xid::text""",
+                    (hour, hour),
+                ).fetchone()[0]
+
+            async def exercise():
+                store = ObjectStore(client, bucket, tmp_path, 1, 0, Mock())
+                async with AsyncConnectionPool(dsn, min_size=1) as pool:
+                    archive = DbArchive(pool, store, Catalog(store, timedelta(0)))
+                    # No consumer_cursor rows yet.
+                    assert not await archive.poll()
+
+                    # One cursor caught up while a second cursor lags behind.
+                    with psycopg.connect(dsn) as cursor_conn:
+                        cursor_conn.execute(
+                            """INSERT INTO jammy.consumer_cursor (consumer, last_xid, last_event_id)
+                               VALUES ('processor', %s::text::xid8, 'db-event'),
+                                      ('lagging', '0'::xid8, '')""",
+                            (row_xid,),
+                        )
+                    assert not await archive.poll()
+
+                    # Both cursors caught up, but the older in-flight xid still blocks xmin.
+                    with psycopg.connect(dsn) as cursor_conn:
+                        cursor_conn.execute(
+                            """UPDATE jammy.consumer_cursor
+                               SET last_xid = %s::text::xid8, last_event_id = 'db-event'
+                               WHERE consumer = 'lagging'""",
+                            (row_xid,),
+                        )
+                    assert not await archive.poll()
+
+                    # Once the older transaction ends, xmin advances past row_xid.
+                    inflight.rollback()
+                    assert await archive.poll()
+
+            asyncio.run(exercise())
+        with psycopg.connect(dsn) as conn:
+            assert conn.execute(
+                "SELECT to_regclass(%s)", (f"jammy.{name}",)
+            ).fetchone() == (None,)
+        assert rows(client, bucket) == ["db-event"]

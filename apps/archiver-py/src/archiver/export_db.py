@@ -60,9 +60,10 @@ class DbArchive:
             if name is None:
                 return False
             table = sql.Identifier("jammy", name)
-            if await self._has_unprocessed(conn, table):
+            current = await self._partition_status(conn, table)
+            if await self._has_unprocessed(conn, current):
                 return False
-            return await self._archive(conn, name, table, retry)
+            return await self._archive(conn, name, table, retry, current=current)
 
     async def _seal_exported(self, conn, oldest_unexported):
         result = await conn.execute(
@@ -83,16 +84,20 @@ class DbArchive:
             self.watermark = watermark
 
     @staticmethod
-    async def _has_unprocessed(conn, table):
+    async def _has_unprocessed(conn, status):
+        _, xid, event_id, rows = status
+        if rows == 0:
+            return False
         result = await conn.execute(
-            sql.SQL(
-                """SELECT EXISTS (
-                   SELECT FROM {} r WHERE NOT EXISTS (
-                       SELECT FROM jammy.consumer_cursor c
-                       WHERE (r.ingest_xid, r.event_id) <= (c.last_xid, c.last_event_id)
+            """SELECT NOT (
+                   EXISTS (SELECT FROM jammy.consumer_cursor)
+                   AND NOT EXISTS (
+                       SELECT FROM jammy.consumer_cursor
+                       WHERE (last_xid, last_event_id) < (%s::text::xid8, %s)
                    )
-               )"""
-            ).format(table)
+                   AND %s::text::xid8 < pg_snapshot_xmin(pg_current_snapshot())
+               )""",
+            (xid, event_id, xid),
         )
         return (await result.fetchone())[0]
 
@@ -111,8 +116,9 @@ class DbArchive:
         )
         return await result.fetchone()
 
-    async def _archive(self, conn, name, table, retry=None):
-        current = await self._partition_status(conn, table)
+    async def _archive(self, conn, name, table, retry=None, *, current=None):
+        if current is None:
+            current = await self._partition_status(conn, table)
         if retry is not None and retry.partition == name and retry.status == current:
             # The previous upload survived rollback. Verify it again before detach.
             for ref in retry.files:
@@ -191,7 +197,7 @@ class DbArchive:
             sql.SQL("LOCK TABLE {} IN ACCESS EXCLUSIVE MODE").format(table)
         )
         if await self._partition_status(conn, table) != prepared.status or (
-            await self._has_unprocessed(conn, table)
+            await self._has_unprocessed(conn, prepared.status)
         ):
             raise OSError("The source partition changed during verification")
         await conn.execute(

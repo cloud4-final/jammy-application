@@ -254,3 +254,130 @@ def test_dispatcher_metrics_expose_expected_names_labels_and_buckets(monkeypatch
         and labels["instance"] == "dispatcher-test"
         for labels in buckets
     )
+
+
+def test_leader_and_lease_gauges_do_not_flicker_to_zero_during_checks(monkeypatch):
+    registry = CollectorRegistry()
+    monkeypatch.setattr(obs, "REGISTRY", registry)
+    monkeypatch.setattr(admin_module, "REGISTRY", registry)
+    monkeypatch.setattr(obs.metrics, "set_meter_provider", lambda provider: None)
+
+    monkeypatch.setenv("SITE_ID", "test")
+    monkeypatch.setenv("INSTANCE_ID", "dispatcher-test")
+    monkeypatch.setenv("PLANT_GATEWAY_URL", "http://plantsim.test")
+    monkeypatch.setenv("LEASE_MODE", "disabled")
+    monkeypatch.delenv("SQS_QUEUE_URL", raising=False)
+    monkeypatch.delenv("ADMIN_PORT", raising=False)
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
+
+    class FakeConn:
+        async def execute(self, *_args, **_kwargs):
+            return None
+
+    admin_server = None
+    real_admin = main.AdminServer
+    observations = {}
+    cycle = 0
+
+    async def scrape_gauges():
+        async with httpx.AsyncClient(
+            base_url=f"http://127.0.0.1:{admin_server.port}"
+        ) as client:
+            response = await client.get("/metrics")
+        assert response.status_code == 200
+        families = {
+            family.name: family
+            for family in text_string_to_metric_families(response.text)
+        }
+        return (
+            families["jammy_dispatcher_is_leader"].samples[0].value,
+            families["jammy_dispatcher_lease_active"].samples[0].value,
+        )
+
+    class FakeLeader:
+        def __init__(self, _pool, holder="dispatcher"):
+            self.holder = holder
+            self.generation = None
+
+        async def try_acquire(self):
+            if cycle == 1:
+                observations["during_try_acquire"] = await scrape_gauges()
+            if cycle >= 2:
+                self.generation = None
+                return None
+            self.generation = 1
+            return 1
+
+        async def release(self, *, generation=None):
+            if generation is None or generation == self.generation:
+                self.generation = None
+
+        @asynccontextmanager
+        async def transaction(self):
+            yield FakeConn()
+
+    class FakePool:
+        async def close(self):
+            pass
+
+    async def exercise():
+        nonlocal admin_server, cycle
+        stop = asyncio.Event()
+
+        def capture_admin(_port, checks):
+            nonlocal admin_server
+            admin_server = real_admin(0, checks)
+            return admin_server
+
+        async def fake_pool(_cfg, workers=1):
+            return FakePool()
+
+        async def fake_active_lease(self):
+            if cycle == 1:
+                observations["during_active_lease"] = await scrape_gauges()
+            return SimpleNamespace(active=True, generation=1, epoch=0)
+
+        async def fake_dispatch_one(self):
+            return False
+
+        async def fake_expire(self):
+            pass
+
+        async def fake_check_compliance(_conn, **_kwargs):
+            pass
+
+        async def wait_for_cycle(stop_waiter, *, timeout):
+            nonlocal cycle
+            stop_waiter.close()
+            observations[f"after_cycle_{cycle}"] = await scrape_gauges()
+            cycle += 1
+            if cycle == 3:
+                stop.set()
+
+        monkeypatch.setattr(main, "AdminServer", capture_admin)
+        monkeypatch.setattr(main.db, "pool", fake_pool)
+        monkeypatch.setattr(main, "Leader", FakeLeader)
+        monkeypatch.setattr(main, "check_compliance", fake_check_compliance)
+        monkeypatch.setattr(Dispatcher, "active_lease", fake_active_lease)
+        monkeypatch.setattr(Dispatcher, "dispatch_one", fake_dispatch_one)
+        monkeypatch.setattr(Dispatcher, "expire", fake_expire)
+        monkeypatch.setattr(
+            main,
+            "asyncio",
+            SimpleNamespace(
+                Event=asyncio.Event,
+                TaskGroup=asyncio.TaskGroup,
+                timeout=asyncio.timeout,
+                wait_for=wait_for_cycle,
+            ),
+        )
+        await main.serve(stop, CommonConfig.from_env())
+
+    asyncio.run(exercise())
+    assert observations == {
+        "after_cycle_0": (1.0, 1.0),
+        "during_try_acquire": (1.0, 1.0),
+        "during_active_lease": (1.0, 1.0),
+        "after_cycle_1": (1.0, 1.0),
+        "after_cycle_2": (0.0, 0.0),
+    }

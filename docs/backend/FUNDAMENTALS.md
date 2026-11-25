@@ -82,9 +82,9 @@ JAMMY 백엔드 코드·인프라·CI 리뷰 시 프로덕션 장애(리소스 �
   - 이유: 미래/과거 허용 범위(`GATE_MAX_PAST`, `GATE_MAX_FUTURE`) 파티션이 없으면 `INSERT`가 즉시 실패한다.
   - 검증: `rg -n "PARTITION BY RANGE|ensure_partitions|CREATE INDEX" contracts/db/migrations/ apps/`.
   - 출처: [PostgreSQL 17 Partitioning](https://www.postgresql.org/docs/17/ddl-partitioning.html)
-- [ ] **`xid8` 스냅샷 커서 기반 증분 읽기**: direct-db 소비 커서는 시계가 아니라 `pg_current_xact_id()` 기반 `ingest_xid`와 `event_id` 복합 커서(`(ingest_xid, event_id) > ($1, $2)`)를 사용한다.
-  - 이유: 동시 트랜잭션이 커밋되는 순서와 `received_at` 타임스탬프 순서는 어긋날 수 있어 타임스탬프 커서는 행을 영구 누락한다.
-  - 검증: `rg -n "xid8|pg_current_xact_id|ingest_xid|last_xid" contracts/db/migrations/ apps/`.
+- [ ] **`xid8` 스냅샷 커서 기반 증분 읽기**: direct-db 소비 커서는 시계가 아니라 `pg_current_xact_id()` 기반 `ingest_xid`와 `event_id` 복합 커서(`(ingest_xid, event_id) > ($1, $2)`)를 사용하되, 반드시 `ingest_xid < pg_snapshot_xmin(pg_current_snapshot())` 상한 조건 내의 행만 읽고 커서를 전진시킨다.
+  - 이유: 동시 트랜잭션이 커밋되는 순서와 `received_at` 타임스탬프 순서는 어긋날 수 있어 타임스탬프 커서는 행을 영구 누락하며, `pg_snapshot_xmin(pg_current_snapshot())` 상한 없이 커서를 전진시키면 아직 커밋되지 않은 더 작은 `xid` 트랜잭션의 행을 건너뛴다.
+  - 검증: `rg -n "xid8|pg_current_xact_id|pg_snapshot_xmin|ingest_xid|last_xid" contracts/db/migrations/ apps/`.
   - 출처: [PostgreSQL 17 Snapshot Functions](https://www.postgresql.org/docs/17/functions-info.html#FUNCTIONS-PG-SNAPSHOT)
 - [ ] **대량 적재에 `COPY` 프로토콜 사용**: 원시 이벤트와 격리 행 적재는 단건 `INSERT` 루프 대신 `pgx.CopyFrom` / `psycopg` `copy()`를 단일 트랜잭션에서 사용한다.
   - 이유: 배치당 수천 건을 단건 `INSERT`로 왕복하면 네트워크·WAL 플러시 지연으로 인제스트 처리량이 급락한다.
@@ -376,9 +376,9 @@ JAMMY 백엔드 코드·인프라·CI 리뷰 시 프로덕션 장애(리소스 �
   - 이유: 언어 구현체마다 이름이나 버킷 경계가 다르면 p95/p99 비교와 동일 대시보드 쿼리가 깨진다.
   - 검증: `rg -n "durationBuckets|HTTP_BUCKETS|jammy_" contracts/METRICS.md libs/go/obs/ libs/py/jammy_common/obs.py`.
   - 출처: [Prometheus Metric Naming](https://prometheus.io/docs/practices/naming/)
-- [ ] **라벨 허용 목록과 고카디널리티 차단**: 메트릭 라벨은 `service`, `instance`, `site`, `result`, `reason`, `kind`, `profile` 및 HTTP 템플릿 `http_route`(절대 raw URL·`event_id`·`asset_id` 금지)로 제한한다.
+- [ ] **라벨 허용 목록과 고카디널리티 차단**: 메트릭 라벨은 `service`, `instance`, `site`, `result`, `reason`, `kind`, `profile`로 제한하고, HTTP 히스토그램(`http_server_request_duration_seconds`)에만 `http_request_method`, `http_route`(템플릿 경로, 절대 raw URL 금지), `http_response_status_code`를 추가 허용한다(`event_id`·`asset_id` 금지).
   - 이유: 무한 카디널리티 ID를 라벨에 넣으면 VictoriaMetrics/Prometheus 메모리가 고갈돼 스크랩이 중단된다.
-  - 검증: `rg -n "applicationLabel|METRIC_LABELS|http_route" contracts/METRICS.md libs/go/obs/ libs/py/jammy_common/obs.py`.
+  - 검증: `rg -n "applicationLabel|METRIC_LABELS|http_route|http_request_method|http_response_status_code" contracts/METRICS.md libs/go/obs/ libs/py/jammy_common/obs.py`.
   - 출처: [Prometheus Label Cardinality](https://prometheus.io/docs/practices/instrumentation/#do-not-overuse-labels)
 - [ ] **닫힌 집합 `result`와 RED 대시보드 지표 완성**: 모든 핵심 경로가 요청률(Rate)·오류(`http_response_status_code >= 500` 또는 닫힌 집합 `result="error"`)·지연(`*_duration_seconds`)을 노출한다.
   - 이유: 임의 문자열 `result`는 알람과 SLI 집계를 깨뜨리고, RED 중 하나라도 빠지면 장애 탐지가 늦어진다.

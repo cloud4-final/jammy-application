@@ -20,7 +20,7 @@ async def submit(
     *, site_id: str, lease_epoch: int | None,
 ) -> tuple[dict, bool]:
     body_hash = hashlib.sha256(body).hexdigest()
-    async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cursor:
+    async with pool.connection(timeout=2) as conn, conn.cursor(row_factory=dict_row) as cursor:
         if lease_epoch is not None:
             await cursor.execute(
                 "SELECT epoch FROM jammy.site_lease_state WHERE site_id = %s FOR SHARE",
@@ -60,7 +60,7 @@ async def submit(
 
 
 async def detail(pool: AsyncConnectionPool, instruction_id: str) -> dict | None:
-    async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cursor:
+    async with pool.connection(timeout=2) as conn, conn.cursor(row_factory=dict_row) as cursor:
         # Read the instruction and commands from the same committed snapshot.
         await conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
         await cursor.execute(

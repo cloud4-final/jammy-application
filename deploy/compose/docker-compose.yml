@@ -7,7 +7,7 @@ x-app: &app
   stop_grace_period: 30s
 
 x-common-env: &common-env
-  SITE_ID: ${SITE_ID:-site-a}
+  SITE_ID: ${SITE_ID:-jammy-a}
   OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
 
 x-db-env: &db-env
@@ -43,7 +43,7 @@ x-dispatcher-env: &dispatcher-env
   LEASE_TABLE: ${LEASE_TABLE:-jammy-site-lease}
   LEASE_KEY_NAME: ${LEASE_KEY_NAME:-lease_id}
   LEASE_KEY_VALUE: ${LEASE_KEY_VALUE:-db-primary}
-  LEASE_HOLDER: ${LEASE_HOLDER:-${SITE_ID:-site-a}}
+  LEASE_HOLDER: ${LEASE_HOLDER:-${SITE_ID:-jammy-a}}
   LEASE_RENEW_SECONDS: ${LEASE_RENEW_SECONDS:-5}
   DYNAMODB_ENDPOINT: http://dynamodb-local:8000
   PLANT_GATEWAY_URL: http://plantsim:8080
@@ -282,7 +282,7 @@ services:
       ARM: ${ARM:-}
       PROFILE: ${PROFILE:-}
       IMPL: ${IMPL:-go}
-      SITE_ID: ${SITE_ID:-site-a}
+      SITE_ID: ${SITE_ID:-jammy-a}
     volumes:
       - ../../observability/alloy/shared.alloy:/etc/alloy/jammy/shared.alloy:ro
       - ../../observability/alloy/compose.alloy:/etc/alloy/jammy/compose.alloy:ro
