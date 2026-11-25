@@ -1,0 +1,6 @@
+apiVersion: v2
+name: jammy-platform
+description: JAMMY control and data services for direct-db and JetStream deployments
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
