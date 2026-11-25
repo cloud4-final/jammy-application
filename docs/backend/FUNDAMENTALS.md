@@ -144,9 +144,9 @@ JAMMY 백엔드 코드·인프라·CI 리뷰 시 프로덕션 장애(리소스 �
   - 이유: 랜덤 UUID 키는 재시도 시 동일 데이터 중복 업로드를 만들고, 시퀀스 기반 키는 멱등 재실행을 가능하게 한다.
   - 검증: `rg -n "manifest\.json|seal\.Prefix|\.parquet" apps/archiver-go/ apps/archiver-py/`.
   - 출처: [Amazon S3 Prefixes](https://docs.aws.amazon.com/AmazonS3/latest/userguide/using-prefixes.html)
-- [ ] **조건부 쓰기(`IfNoneMatch: "*"`)로 덮어쓰기 방지**: `PutObject`와 `CompleteMultipartUpload` 모두 `IfNoneMatch: "*"`를 전달해 기존 Parquet/Manifest를 실수로 덮어쓰지 않는다.
+- [ ] **중복 키·동시 export 차단으로 아카이브 덮어쓰기 방지**: Go `PutJSON`의 기존 매니페스트 일치 검사(`ErrManifestConflict`), Python `catalog.has_object` 분할, PostgreSQL `archive_exports` advisory lock으로 기존 Parquet/Manifest 덮어쓰기를 막는다(`portal-publisher`의 `latest.json`은 의도된 최신 상태 갱신).
   - 이유: 아카이버 재시작이나 이중 실행 시 동일 키를 덮어쓰면 이미 참조 중인 SHA-256·행 수 정합성이 깨진다.
-  - 검증: `rg -n "IfNoneMatch" apps/archiver-go/ apps/archiver-py/ apps/portal-publisher/`.
+  - 검증: `rg -n "ErrManifestConflict|has_object|archive_exports" apps/archiver-go/ apps/archiver-py/`.
   - 출처: [S3 Conditional Writes](https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-writes.html)
 - [ ] **멀티파트 파트 수 제한과 실패 시 `AbortMultipartUpload`**: 파일 크기에 따라 파트 크기를 `max(64MiB, ceil(size/10000))`로 계산해 10,000 파트 한도를 넘기지 않고, 오류 시 반드시 `AbortMultipartUpload`를 실행한다.
   - 이유: 중단되지 않은 미완료 멀티파트 업로드는 버킷에 숨은 스토리지 비용과 고아 파트를 계속 누적시킨다.
