@@ -3,7 +3,7 @@
 import asyncio
 from contextlib import asynccontextmanager, suppress
 
-from psycopg import Error, OperationalError
+from psycopg import Error, InterfaceError, OperationalError
 from psycopg_pool import AsyncConnectionPool
 
 LOCK_NAMESPACE = "jammy.leader_generation"
@@ -67,9 +67,23 @@ class Leader:
         try:
             await conn.execute("SELECT 1")
             return self._conn is conn
-        except OperationalError:
+        except (OperationalError, InterfaceError):
             await self.release()
             return False
+
+    async def ping(self) -> bool | None:
+        async with self._transaction_lock:
+            conn = self._conn
+            if conn is None:
+                return None
+            try:
+                async with conn.transaction():
+                    await conn.execute("SET LOCAL statement_timeout = '1s'")
+                    await conn.execute("SELECT 1")
+                return True
+            except Error:
+                await self._release()
+                return False
 
     @property
     def connection(self):

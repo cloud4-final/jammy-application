@@ -67,6 +67,10 @@ class SQSDrain:
             instruction = Instruction.model_validate_json(body)
         except ValidationError:
             return "invalid"
+        if "\0" in instruction.instruction_id or any(
+            "\0" in key for key in (instruction.routing_keys or ())
+        ):
+            return "invalid"
 
         digest = hashlib.sha256(body).hexdigest()
         async with transaction() as conn:

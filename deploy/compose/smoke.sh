@@ -17,11 +17,25 @@ if [[ -z "$migrate_id" || $(docker inspect --format '{{.State.Status}} {{.State.
 fi
 echo "PASS: migrate exited with status 0"
 
-# shellcheck disable=SC2016 # Expand PostgreSQL variables inside the container.
+if [[ $(docker inspect --format '{{.Path}}' "$migrate_id") != /migrate-from-env ]]; then
+    echo "FAIL: migrate did not use the shared migration launcher" >&2
+    exit 1
+fi
 
+# shellcheck disable=SC2016 # Expand PostgreSQL variables inside the container.
 "${compose[@]}" exec -T pg-primary sh -ec \
     'exec psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT count(*) FROM jammy.assets"'
 echo "PASS: jammy.assets is queryable"
+
+# shellcheck disable=SC2016 # Expand PostgreSQL variables inside the container.
+version=$("${compose[@]}" exec -T pg-primary sh -ec \
+    'exec psql -XAt -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+        -c "SELECT version FROM public.schema_migrations WHERE NOT dirty"')
+if [[ ! $version =~ ^[1-9][0-9]*$ ]]; then
+    echo "FAIL: no clean migration version in public.schema_migrations" >&2
+    exit 1
+fi
+echo "PASS: public.schema_migrations is clean at version $version"
 
 if [[ "$profile" == split ]]; then
     # shellcheck disable=SC2016 # Expand PostgreSQL variables inside the container.
