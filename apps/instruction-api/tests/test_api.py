@@ -152,7 +152,7 @@ def test_oversized_body_stops_at_first_chunk_over_limit(method, setting, limit, 
                 "X-Jammy-Timestamp": str(timestamp),
                 "X-Jammy-Signature": "0" * 64,
             })
-        problem(response, 413, "body_too_large")
+        problem(response, 413, "payload_too_large")
 
     asyncio.run(exercise())
 
@@ -434,7 +434,7 @@ def test_metrics_use_closed_results_and_route_templates(dsn, monkeypatch):
             for line in buckets
         )
         assert any(
-            'http_route="/v1/instructions/{instruction_id}"' in line
+            'http_route="/v1/instructions/{id}"' in line
             and 'http_request_method="GET"' in line
             and 'http_response_status_code="503"' in line
             for line in buckets

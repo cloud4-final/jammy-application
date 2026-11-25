@@ -30,13 +30,16 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type settings struct {
 	config.Common
 	streams                          []string
 	consumer, stage, bucket          string
+	s3Prefix                         string
 	flushInterval, lateness, ackWait time.Duration
 	flushBytes, uploadBPS            int64
 	zstdLevel                        int
@@ -111,6 +114,10 @@ func load() (settings, error) {
 	if err != nil || cfg.zstdLevel < 1 || cfg.zstdLevel > 22 {
 		return cfg, errors.New("ARCHIVE_ZSTD_LEVEL must be in 1..22")
 	}
+	cfg.s3Prefix, err = s3x.Prefix()
+	if err != nil {
+		return cfg, err
+	}
 	if cfg.PipelineMode == "jetstream" {
 		streams, err := config.Lookup("NATS_STREAMS", "")
 		if err != nil {
@@ -119,6 +126,13 @@ func load() (settings, error) {
 		cfg.streams, err = config.ParseList(streams)
 		if err != nil {
 			return cfg, fmt.Errorf("invalid NATS_STREAMS: %w", err)
+		}
+		seen := make(map[string]struct{}, len(cfg.streams))
+		for _, stream := range cfg.streams {
+			if _, duplicate := seen[stream]; duplicate {
+				return cfg, fmt.Errorf("invalid NATS_STREAMS: duplicate stream %q", stream)
+			}
+			seen[stream] = struct{}{}
 		}
 	}
 	const ackWaitName = "ACK_WAIT_SECONDS"
@@ -199,24 +213,7 @@ func (cfg settings) run(ctx context.Context) error {
 	}
 	streams := make([]streamStatus, len(cfg.streams))
 	ready := func(ctx context.Context) bool {
-		check, cancel := context.WithTimeout(ctx, time.Second)
-		defer cancel()
-		if pool != nil {
-			if err := pool.Ping(check); err != nil {
-				return false
-			}
-		} else {
-			if !nc.IsConnected() || nc.FlushWithContext(check) != nil {
-				return false
-			}
-			for i := range streams {
-				if !streams[i].ready.Load() {
-					return false
-				}
-			}
-		}
-		_, err := client.HeadBucket(check, &s3.HeadBucketInput{Bucket: &cfg.bucket})
-		return err == nil
+		return isReady(ctx, cfg.bucket, client, pool, nc, streams)
 	}
 	probe := admin.New(cfg.AdminPort, map[string]func(context.Context) bool{"dependencies": ready})
 	if err := probe.Start(); err != nil {
@@ -260,12 +257,14 @@ func (cfg settings) run(ctx context.Context) error {
 	var workers sync.WaitGroup
 	tracer := otel.Tracer("jammy.archiver")
 	if pool != nil {
-		exporter := exportdb.Exporter{Pool: pool, Archive: archive, Lateness: cfg.lateness}
+		exporter := exportdb.Exporter{Pool: pool, Archive: archive, Lateness: cfg.lateness, KeyPrefix: cfg.s3Prefix}
 		workers.Go(func() {
 			for ctx.Err() == nil {
 				work, span := tracer.Start(context.WithoutCancel(ctx), "archive.export")
 				exported, err := exporter.ExportNext(work)
 				if err != nil {
+					span.RecordError(err)
+					span.SetStatus(codes.Error, err.Error())
 					slog.WarnContext(work, "Direct DB archive export failed", "error", err)
 				}
 				span.End()
@@ -278,7 +277,7 @@ func (cfg settings) run(ctx context.Context) error {
 		})
 	} else {
 		archiver := sourcejs.Archiver{
-			Archive: archive, Lateness: cfg.lateness,
+			Archive: archive, Lateness: cfg.lateness, KeyPrefix: cfg.s3Prefix,
 			Poison: func(ctx context.Context) { recordFile(ctx, "poison") },
 		}
 		for i, stream := range cfg.streams {
@@ -293,10 +292,13 @@ func (cfg settings) run(ctx context.Context) error {
 						if err == nil {
 							status.ready.Store(true)
 							err = sourcejs.Run(ctx, consumer, cfg.flushBytes, cfg.flushInterval, cfg.ackWait, func(work context.Context, messages []jetstream.Msg) error {
-								work, span := tracer.Start(work, "archive.flush")
+								parent, links := sourcejs.FlushTraceContext(work, messages)
+								work, span := tracer.Start(parent, "archive.flush", trace.WithSpanKind(trace.SpanKindConsumer), trace.WithLinks(links...))
 								defer span.End()
 								err := archiver.Flush(work, messages)
 								if err != nil {
+									span.RecordError(err)
+									span.SetStatus(codes.Error, err.Error())
 									slog.WarnContext(work, "JetStream archive flush failed", "error", err)
 								}
 								return err
@@ -316,6 +318,33 @@ func (cfg settings) run(ctx context.Context) error {
 	probe.SetDraining()
 	workers.Wait()
 	return nil
+}
+
+func isReady(ctx context.Context, bucket string, client *s3.Client, pool *pgxpool.Pool, nc *nats.Conn, streams []streamStatus) bool {
+	check, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	if pool != nil {
+		if err := pool.Ping(check); err != nil {
+			return false
+		}
+	} else {
+		if nc == nil || !nc.IsConnected() || nc.FlushWithContext(check) != nil {
+			return false
+		}
+		for i := range streams {
+			if !streams[i].ready.Load() {
+				return false
+			}
+		}
+	}
+	return s3Ready(check, client, bucket)
+}
+
+func s3Ready(ctx context.Context, client *s3.Client, bucket string) bool {
+	check, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	_, err := client.HeadBucket(check, &s3.HeadBucketInput{Bucket: &bucket})
+	return err == nil
 }
 
 func pause(ctx context.Context, delay time.Duration) {

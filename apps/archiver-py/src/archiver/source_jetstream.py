@@ -13,6 +13,32 @@ from jammy_common.codec import decode_batch
 from nats.errors import Error as NatsError
 from nats.errors import TimeoutError as NatsTimeout
 from nats.js.api import AckPolicy, ConsumerConfig
+from opentelemetry import trace
+from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
+
+_PROPAGATOR = TraceContextTextMapPropagator()
+
+
+def flush_trace_context(messages):
+    parent_ctx = None
+    links = []
+    seen = set()
+    for message in messages:
+        headers = getattr(message, "headers", None) or {}
+        if not headers:
+            continue
+        carrier = {k.lower(): v for k, v in headers.items()}
+        extracted = _PROPAGATOR.extract(carrier)
+        span_ctx = trace.get_current_span(extracted).get_span_context()
+        if not span_ctx.is_valid:
+            continue
+        if parent_ctx is None:
+            parent_ctx = extracted
+        key = (span_ctx.trace_id, span_ctx.span_id)
+        if key not in seen:
+            seen.add(key)
+            links.append(trace.Link(span_ctx))
+    return parent_ctx, links
 
 
 class BatchIdMismatch(ValueError):
@@ -144,13 +170,28 @@ class JetStreamArchive:
         if not self.pending:
             return
         progress = asyncio.create_task(self._keep_ack_deadline())
+        parent_ctx, links = flush_trace_context(
+            [delivery.message for delivery in self.pending.values()]
+        )
+        tracer = trace.get_tracer("jammy.archiver")
         try:
-            async with self.persist_lock:
-                await asyncio.to_thread(self._persist)
-            for key, delivery in list(self.pending.items()):
-                await delivery.message.ack()
-                self.size -= delivery.wire_bytes
-                del self.pending[key]
+            with tracer.start_as_current_span(
+                "archive.flush",
+                context=parent_ctx,
+                kind=trace.SpanKind.CONSUMER,
+                links=links,
+            ) as span:
+                try:
+                    async with self.persist_lock:
+                        await asyncio.to_thread(self._persist)
+                    for key, delivery in list(self.pending.items()):
+                        await delivery.message.ack()
+                        self.size -= delivery.wire_bytes
+                        del self.pending[key]
+                except BaseException as error:
+                    span.record_exception(error)
+                    span.set_status(trace.StatusCode.ERROR)
+                    raise
         finally:
             self.observe(self.stream, len(self.pending))
             progress.cancel()
@@ -172,7 +213,11 @@ class JetStreamArchive:
                 raise BatchIdMismatch("Nats-Msg-Id does not match batch_id")
             ingest_id = delivery.ingest_id
             for row in delivery.rows:
-                prefix = hour_prefix(row.profile, hour_start(row.event_time))
+                prefix = hour_prefix(
+                    row.profile,
+                    hour_start(row.event_time),
+                    s3_prefix=self.catalog.s3_prefix,
+                )
                 identity = (prefix, ingest_id, delivery.stream, row.schema_version)
                 groups[identity].append((delivery.sequence, row))
 

@@ -17,7 +17,7 @@ Provide an overlay outside version control, for example `/path/to/site-values.ya
 | --- | --- |
 | `global.image.tag` | Published release tag or `<version>-<sha7>`. |
 | `global.existingSecret` | Name of the platform Secret in `jammy`. |
-| `global.s3.bucket`, `global.s3.endpoint` | Bucket and optional endpoint for archiver and portal-publisher. Leave the endpoint empty to use the AWS default endpoint for the configured region. Set `region` and `forcePathStyle` as needed. |
+| `global.s3.bucket`, `global.s3.prefix`, `global.s3.endpoint` | Bucket, optional key prefix (`S3_PREFIX`), and optional endpoint for archiver and portal-publisher. Leave the endpoint empty to use the AWS default endpoint for the configured region. Set `region` and `forcePathStyle` as needed. |
 | `global.nats.url` | NATS endpoint for JetStream mode. Set `global.nats.existingSecret` with key `NATS_CREDS` when credentials are required. |
 | `dispatcher.env.PLANT_GATEWAY_URL` | Plant gateway base URL. Enable `plantsim` and point the gateway URL at its Service for a simulator deployment. |
 | `dispatcher.env.LEASE_MODE` | Choose `disabled` or `dynamodb`. DynamoDB mode also requires `LEASE_TABLE` and `LEASE_AUTO_ACQUIRE`. |

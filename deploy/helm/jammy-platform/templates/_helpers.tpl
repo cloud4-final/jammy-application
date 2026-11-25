@@ -126,6 +126,11 @@ tolerations:
 {{- end }}
 {{- if $s3 }}
   {{- $_ := set $env "S3_BUCKET" (required "global.s3.bucket is required for S3 services" $global.s3.bucket) }}
+  {{- with $global.s3.prefix }}
+    {{- $_ := set $env "S3_PREFIX" . }}
+  {{- else }}
+    {{- $_ := unset $env "S3_PREFIX" }}
+  {{- end }}
   {{- with $global.s3.endpoint }}
     {{- $_ := set $env "S3_ENDPOINT" . }}
   {{- else }}

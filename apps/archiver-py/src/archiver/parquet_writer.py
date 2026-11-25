@@ -161,13 +161,37 @@ def manifest_key(key: str) -> str:
     return key.removesuffix(".parquet") + ".manifest.json"
 
 
+def validate_parquet(source, *, expected_rows: int) -> None:
+    try:
+        parquet = pq.ParquetFile(source)
+    except (pa.ArrowException, OSError) as error:
+        raise OSError(f"Invalid Parquet object: {error}") from error
+    if parquet.metadata.num_rows != expected_rows:
+        raise OSError(
+            f"Parquet row count differs: got {parquet.metadata.num_rows}, "
+            f"expected {expected_rows}"
+        )
+    if not parquet.schema_arrow.equals(SCHEMA, check_metadata=False):
+        raise OSError("Parquet schema does not match contract")
+    if any(
+        parquet.schema.column(i).max_definition_level != 0
+        for i in range(parquet.metadata.num_columns)
+    ):
+        raise OSError("Parquet schema columns must be required")
+    for group in range(parquet.metadata.num_row_groups):
+        row_group = parquet.metadata.row_group(group)
+        for col in range(parquet.metadata.num_columns):
+            if row_group.column(col).compression.lower() != "zstd":
+                raise OSError("Parquet column compression must be zstd")
+
+
 class ObjectStore:
     def __init__(self, client, bucket, directory, level, bandwidth, meter) -> None:
         self.client = client
         self.bucket = bucket
         self.directory = directory
         self.level = level
-        self.transfer = upload_config(bandwidth)
+        self.bandwidth = bandwidth
         self.files = meter.create_counter("jammy_archiver_files")
         self.bytes = meter.create_counter("jammy_archiver_upload_bytes")
         self.duration = meter.create_histogram(
@@ -207,10 +231,17 @@ class ObjectStore:
         metadata = stage.manifest(**identity)
         if sequence_ranges is not None:
             metadata["sequence_ranges"] = sequence_ranges
+        validate_parquet(stage.path, expected_rows=metadata["rows"])
+        file_size = stage.path.stat().st_size
         start = monotonic()
-        self.client.upload_file(str(stage.path), self.bucket, key, Config=self.transfer)
+        self.client.upload_file(
+            str(stage.path),
+            self.bucket,
+            key,
+            Config=upload_config(self.bandwidth, file_size),
+        )
         self.duration.record(monotonic() - start)
-        self.bytes.add(stage.path.stat().st_size)
+        self.bytes.add(file_size)
         self.verify(key, rows=metadata["rows"], sha256=metadata["sha256"])
         self.put_json(manifest_key(key), metadata)
         self.files.add(1, {"result": "ok"})
@@ -233,12 +264,7 @@ class ObjectStore:
         with self._download(key) as (downloaded, checksum):
             if checksum != sha256:
                 raise OSError(f"Archived Parquet checksum differs for {key}")
-            actual_rows = pq.read_metadata(downloaded).num_rows
-            if actual_rows != rows:
-                raise OSError(
-                    f"Archived Parquet row count differs for {key}: "
-                    f"got {actual_rows}, expected {rows}"
-                )
+            validate_parquet(downloaded, expected_rows=rows)
 
     def inspect(self, key):
         """Read remote Parquet to complete an interrupted manifest."""

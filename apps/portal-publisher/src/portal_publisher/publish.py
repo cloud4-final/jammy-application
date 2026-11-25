@@ -11,13 +11,26 @@ from psycopg import Error
 from psycopg.rows import dict_row
 
 logger = logging.getLogger(__name__)
+S3_UPLOAD_TIMEOUT_SECONDS = 5
 
 
 class Publisher:
-    def __init__(self, pool, s3, bucket: str, counter, *, prefix="portal"):
+    def __init__(
+        self,
+        pool,
+        s3,
+        bucket: str,
+        counter,
+        *,
+        prefix="portal",
+        s3_prefix="",
+        upload_timeout: float | None = None,
+    ):
         self.pool, self.s3, self.bucket = pool, s3, bucket
-        self.prefix = prefix.strip("/")
+        parts = [part for part in (s3_prefix.strip("/"), prefix.strip("/")) if part]
+        self.prefix = "/".join(parts)
         self.counter = counter
+        self.upload_timeout = upload_timeout
         self._retry_minute: datetime | None = None
 
     async def publish_once(self, now: datetime) -> str:
@@ -29,10 +42,10 @@ class Publisher:
         try:
             tenants = await self._load(minute)
             if tenants:
-                await asyncio.to_thread(self._upload, tenants, minute, now)
+                await self._upload(tenants, minute, now)
             self._retry_minute = None
             result = "ok" if tenants else "skipped"
-        except (Error, BotoCoreError, ClientError) as error:
+        except (Error, BotoCoreError, ClientError, TimeoutError) as error:
             self._retry_minute = minute
             logger.warning("Portal publication failed (%s)", type(error).__name__)
             result = "error"
@@ -60,8 +73,13 @@ class Publisher:
                 tenants[row.pop("tenant_id")].append(row)
         return tenants
 
-    def _upload(self, tenants, minute, now):
+    async def _upload(self, tenants, minute, now):
         suffix = minute.strftime("%Y%m%d%H%M")
+        timeout = (
+            S3_UPLOAD_TIMEOUT_SECONDS
+            if self.upload_timeout is None
+            else self.upload_timeout
+        )
         for tenant, assets in tenants.items():
             base = f"{self.prefix}/{tenant}" if self.prefix else tenant
             body = json.dumps(
@@ -74,9 +92,11 @@ class Publisher:
                 ensure_ascii=False,
             ).encode()
             for key in (f"{base}/1m/{suffix}.json", f"{base}/latest.json"):
-                self.s3.put_object(
-                    Bucket=self.bucket,
-                    Key=key,
-                    Body=body,
-                    ContentType="application/json",
-                )
+                async with asyncio.timeout(timeout):
+                    await asyncio.to_thread(
+                        self.s3.put_object,
+                        Bucket=self.bucket,
+                        Key=key,
+                        Body=body,
+                        ContentType="application/json",
+                    )

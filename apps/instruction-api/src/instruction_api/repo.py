@@ -2,10 +2,9 @@
 
 import hashlib
 
+from jammy_common.instructions import Instruction
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
-
-from .models import Instruction
 
 
 class ConflictError(Exception):

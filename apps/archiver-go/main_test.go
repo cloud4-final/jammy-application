@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/cloud4-final/jammy-5th/apps/archiver-go/internal/exportdb"
 	"github.com/cloud4-final/jammy-5th/apps/archiver-go/internal/pq"
@@ -593,10 +595,11 @@ func TestArchiveSettings(t *testing.T) {
 	t.Setenv("PIPELINE_MODE", "jetstream")
 	t.Setenv("NATS_STREAMS", "raw-a,raw-b")
 	t.Setenv("S3_BUCKET", "archive")
+	t.Setenv("S3_PREFIX", "/site-a/")
 	t.Setenv("ARCHIVE_FLUSH_SECONDS", "7")
 	cfg, err := load()
 	check(t, err)
-	if cfg.ackWait != 81*time.Second || cfg.flushBytes != 64<<20 || cfg.zstdLevel != 1 || len(cfg.streams) != 2 {
+	if cfg.ackWait != 81*time.Second || cfg.flushBytes != 64<<20 || cfg.zstdLevel != 1 || len(cfg.streams) != 2 || cfg.s3Prefix != "site-a/" {
 		t.Fatalf("defaults: %+v", cfg)
 	}
 	t.Setenv("ACK_WAIT_SECONDS", "17")
@@ -608,7 +611,7 @@ func TestArchiveSettings(t *testing.T) {
 	for name, value := range map[string]string{
 		"ADMIN_PORT": "0", "HTTP_PORT": "65536", "CONSUMER_NAME": "", "INSTANCE_ID": "",
 		"STAGE_DIR": "", "S3_BUCKET": "", "ARCHIVE_FLUSH_SECONDS": "0", "ARCHIVE_FLUSH_BYTES": "0",
-		"ARCHIVE_ZSTD_LEVEL": "0", "ACK_WAIT_SECONDS": "0",
+		"ARCHIVE_ZSTD_LEVEL": "0", "ACK_WAIT_SECONDS": "0", "NATS_STREAMS": "raw-a,raw-a",
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Setenv(name, value)
@@ -652,5 +655,36 @@ func TestArchiveAckWaitDefaultOverflow(t *testing.T) {
 	check(t, os.WriteFile(path, nil, 0600))
 	if _, err := load(); err == nil || err.Error() != "invalid ACK_WAIT_SECONDS" {
 		t.Fatalf("unexpected empty override error: %v", err)
+	}
+}
+
+func TestIsReadyTimesOutOnStalledS3(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		case <-time.After(5 * time.Second):
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	t.Setenv("AWS_ACCESS_KEY_ID", "test")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
+	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
+	t.Setenv("S3_FORCE_PATH_STYLE", "true")
+	t.Setenv("S3_ENDPOINT", server.URL)
+	client, err := s3x.New(t.Context())
+	check(t, err)
+	opts := client.Options()
+	opts.Retryer = aws.NopRetryer{}
+	client = s3.New(opts)
+	started := time.Now()
+	if s3Ready(t.Context(), client, "archive") {
+		t.Fatal("expected stalled S3 HeadBucket to fail readiness")
+	}
+	if elapsed := time.Since(started); elapsed >= 1500*time.Millisecond {
+		t.Fatalf("s3Ready took %s, want < 1.5s", elapsed)
 	}
 }

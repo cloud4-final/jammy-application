@@ -21,6 +21,7 @@ from jammy_common.config import (
     env,
     positive_size,
 )
+from jammy_common.instructions import Instruction
 from opentelemetry import trace
 from opentelemetry.metrics import Meter
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
@@ -30,7 +31,6 @@ from starlette.exceptions import HTTPException
 
 from . import repo
 from .hmac_auth import HMACAuth
-from .models import Instruction
 
 SERVICE = "instruction-api"
 logger = std_logging.getLogger(__name__)
@@ -45,7 +45,7 @@ PROBLEMS = {
     "bad_signature": (401, "Invalid signature", "Valid HMAC authentication is required."),
     "stale_timestamp": (401, "Stale timestamp", "The request timestamp is outside the allowed skew."),
     "unknown_key": (401, "Unknown key", "The signing key is not recognized."),
-    "body_too_large": (413, "Body too large", "The request body exceeds the configured size limit."),
+    "payload_too_large": (413, "Payload too large", "The request body exceeds the configured size limit."),
     "conflict": (409, "Instruction conflict", "This instruction ID was used with a different body."),
     "stale_epoch": (409, "Stale lease epoch", "The lease epoch is older than the local site epoch."),
     "invalid_body": (422, "Invalid body", "The body does not match the instruction contract."),
@@ -125,7 +125,7 @@ def create_app(
         body = bytearray()
         async for chunk in request.stream():
             if len(chunk) > max_body - len(body):
-                return problem("body_too_large")
+                return problem("payload_too_large")
             body.extend(chunk)
         if not signed.verify(request, body):
             return problem("bad_signature")
@@ -155,12 +155,12 @@ def create_app(
             return problem("conflict")
         return JSONResponse(jsonable_encoder(receipt), status_code=202 if created else 200)
 
-    @app.get("/v1/instructions/{instruction_id}")
-    async def get_instruction(instruction_id: str, request: Request):
+    @app.get("/v1/instructions/{id}")
+    async def get_instruction(id: str, request: Request):
         body = await authenticated_body(request)
         if isinstance(body, JSONResponse):
             return body
-        instruction = await repo.detail(pool, instruction_id)
+        instruction = await repo.detail(pool, id)
         if instruction is None:
             return problem("not_found")
         return JSONResponse(jsonable_encoder(
@@ -184,16 +184,11 @@ async def serve(stop: asyncio.Event, cfg: CommonConfig, auth: HMACAuth) -> None:
     meter = obs.setup(SERVICE, cfg)
     pool = await db.pool(cfg, workers=1)
 
-    async def postgres_ready() -> bool:
-        async with pool.connection(timeout=1) as conn:
-            await conn.execute("SELECT 1")
-        return True
-
     app = create_app(pool, auth, meter, site_id=cfg.site_id)
     public = _PublicServer(uvicorn.Config(
         app, host="0.0.0.0", port=cfg.http_port, workers=1, log_config=None, access_log=False,
     ))
-    admin = AdminServer(cfg.admin_port, {"postgres": postgres_ready})
+    admin = AdminServer(cfg.admin_port, {"postgres": lambda: db.ping(pool)})
     try:
         await admin.start()
         async with asyncio.TaskGroup() as tasks:

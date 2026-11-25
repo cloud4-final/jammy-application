@@ -28,3 +28,26 @@ tests:
           value: 30081
       - notExists:
           path: spec.ports[?(@.name=="admin")].nodePort
+  - it: global_s3_prefix_sets_S3_PREFIX_only_for_s3_services
+    set:
+      global.s3.prefix: site-a
+    template: deployment-app.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: {name: S3_PREFIX, value: site-a}
+        documentSelector:
+          path: metadata.labels["app.kubernetes.io/component"]
+          value: archiver
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: {name: S3_PREFIX, value: site-a}
+        documentSelector:
+          path: metadata.labels["app.kubernetes.io/component"]
+          value: portal-publisher
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content: {name: S3_PREFIX, value: site-a}
+        documentSelector:
+          path: metadata.labels["app.kubernetes.io/component"]
+          value: processor

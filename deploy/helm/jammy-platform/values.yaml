@@ -12,6 +12,7 @@ global:
     existingSecret: ""
   s3:
     bucket: ""
+    prefix: ""
     endpoint: ""
     region: ap-northeast-2
     forcePathStyle: false
