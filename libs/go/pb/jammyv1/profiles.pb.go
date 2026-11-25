@@ -276,7 +276,7 @@ const file_jammy_v1_profiles_proto_rawDesc = "" +
 	"\x12STATUS_UNSPECIFIED\x10\x00\x12\r\n" +
 	"\tSTATUS_OK\x10\x01\x12\x13\n" +
 	"\x0fSTATUS_DEGRADED\x10\x02\x12\x12\n" +
-	"\x0eSTATUS_OFFLINE\x10\x03B6Z4github.com/cloud4-final/jammy-5th/libs/go/pb/jammyv1b\x06proto3"
+	"\x0eSTATUS_OFFLINE\x10\x03B>Z<github.com/cloud4-final/jammy-application/libs/go/pb/jammyv1b\x06proto3"
 
 var (
 	file_jammy_v1_profiles_proto_rawDescOnce sync.Once
