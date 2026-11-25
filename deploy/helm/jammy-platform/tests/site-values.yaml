@@ -1,0 +1,14 @@
+# Local endpoints used for render tests. Kubernetes does not contact them.
+global:
+  image:
+    tag: 0.1.0-1234567
+  existingSecret: jammy-platform-test
+  nats:
+    url: nats://nats:4222
+  s3:
+    bucket: jammy-local
+    endpoint: http://seaweedfs:8333
+dispatcher:
+  env:
+    LEASE_MODE: disabled
+    PLANT_GATEWAY_URL: http://plantsim:8080

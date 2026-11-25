@@ -1,0 +1,15 @@
+prometheus.scrape "services" {
+	targets = [
+		{"__address__" = "ingest-a1:9090", service = "ingest-" + sys.env("IMPL"), instance = "ingest-a1", site = sys.env("SITE_ID")},
+		{"__address__" = "ingest-a2:9090", service = "ingest-" + sys.env("IMPL"), instance = "ingest-a2", site = sys.env("SITE_ID")},
+		{"__address__" = "processor:9090", service = "processor-" + sys.env("IMPL"), instance = "processor", site = sys.env("SITE_ID")},
+		{"__address__" = "archiver:9090", service = "archiver-" + sys.env("IMPL"), instance = "archiver", site = sys.env("SITE_ID")},
+		{"__address__" = "instruction-api:9090", service = "instruction-api", instance = "instruction-api", site = sys.env("SITE_ID")},
+		{"__address__" = "dispatcher-1:9090", service = "dispatcher", instance = "dispatcher-1", site = sys.env("SITE_ID")},
+		{"__address__" = "dispatcher-2:9090", service = "dispatcher", instance = "dispatcher-2", site = sys.env("SITE_ID")},
+		{"__address__" = "portal-publisher:9090", service = "portal-publisher", instance = "portal-publisher", site = sys.env("SITE_ID")},
+		{"__address__" = "plantsim:9090", service = "plantsim", instance = "plantsim", site = sys.env("SITE_ID")},
+	]
+	honor_labels = true
+	forward_to   = [prometheus.remote_write.victoriametrics.receiver]
+}
