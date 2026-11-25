@@ -48,6 +48,28 @@ def test_db_export_sets_lock_timeout_before_locking():
     asyncio.run(run())
 
 
+def test_db_export_prepends_s3_prefix_to_manifest_key():
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    async def run():
+        conn = SimpleNamespace(
+            execute=AsyncMock(side_effect=[None, LockNotAvailable]),
+        )
+        store = SimpleNamespace(put_json=Mock(return_value=b"{}"))
+        archive = DbArchive(None, store, None, s3_prefix="/site-a/")
+        name = "raw_events_2026112300"
+        prepared = PreparedExport(name, (1, "0", "", 0), [], "2026-11-23T00:00:00Z")
+        with pytest.raises(LockNotAvailable):
+            await archive._finalize(conn, sql.Identifier("jammy", name), prepared)
+        assert (
+            store.put_json.call_args.args[0]
+            == "site-a/exports/direct-db/raw_events_2026112300.json"
+        )
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("lock_timeout", [False, True])
 def test_db_mode_export_then_drop_partition(tmp_path, s3_fixture, lock_timeout):
     client, bucket, options = s3_fixture

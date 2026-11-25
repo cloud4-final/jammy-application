@@ -580,6 +580,11 @@ def test_archive_config_rejects_invalid_limits(monkeypatch):
     with pytest.raises(ConfigError, match="ARCHIVE_ZSTD_LEVEL"):
         ArchiveConfig.from_env()
 
+    monkeypatch.setenv("ARCHIVE_ZSTD_LEVEL", "1")
+    assert ArchiveConfig.from_env().s3_prefix == ""
+    monkeypatch.setenv("S3_PREFIX", "/site-a/")
+    assert ArchiveConfig.from_env().s3_prefix == "site-a/"
+
 
 def test_shutdown_retries_transient_flush_error(monkeypatch):
     from types import SimpleNamespace
@@ -763,3 +768,175 @@ def test_archiver_terminates_undecodable_batch_without_staging():
         store.stage.assert_not_called()
 
     asyncio.run(run())
+
+
+def test_is_ready_times_out_when_store_stalls():
+    import threading
+    import time
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from archiver.main import Archiver
+
+    release = threading.Event()
+
+    def stalled_ready():
+        release.wait(5)
+
+    store = Mock()
+    store.ready.side_effect = stalled_ready
+    service = Archiver(
+        SimpleNamespace(streams=(), lateness=timedelta(0)), store, Mock()
+    )
+    service.restored = True
+
+    async def run():
+        started = time.monotonic()
+        assert not await service.is_ready()
+        assert time.monotonic() - started < 1.5
+
+    try:
+        asyncio.run(run())
+    finally:
+        release.set()
+
+
+def test_flush_extracts_traceparent_and_creates_span(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+
+    from archiver.source_jetstream import JetStreamArchive
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+    from opentelemetry.trace import SpanKind
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(
+        "archiver.source_jetstream.trace.get_tracer", provider.get_tracer
+    )
+
+    async def run():
+        source = JetStreamArchive(
+            None,
+            SimpleNamespace(ack_wait=30),
+            None,
+            None,
+            Mock(),
+            stream="raw-fixture",
+            persist_lock=asyncio.Lock(),
+        )
+        m1 = SimpleNamespace(
+            headers={
+                "Traceparent": "00-00000000000000000000000000000042-0000000000000023-01"
+            },
+            ack=AsyncMock(),
+            in_progress=AsyncMock(),
+        )
+        m2 = SimpleNamespace(
+            headers={
+                "traceparent": "00-00000000000000000000000000000043-0000000000000024-01"
+            },
+            ack=AsyncMock(),
+            in_progress=AsyncMock(),
+        )
+        source.pending[1] = SimpleNamespace(message=m1, wire_bytes=5)
+        source.pending[2] = SimpleNamespace(message=m2, wire_bytes=5)
+        source.size = 10
+        monkeypatch.setattr(source, "_persist", lambda: None)
+        await source.flush()
+
+    asyncio.run(run())
+    (span,) = exporter.get_finished_spans()
+    assert span.name == "archive.flush"
+    assert span.kind == SpanKind.CONSUMER
+    assert span.context.trace_id == 0x42
+    assert span.parent.span_id == 0x23
+    assert {link.context.trace_id for link in span.links} == {0x42, 0x43}
+    provider.shutdown()
+
+
+def test_serve_initializes_unacked_gauge(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock, Mock
+
+    from archiver import main
+
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+
+    for key, value in {
+        "SITE_ID": "site-a",
+        "PIPELINE_MODE": "direct-db",
+        "DATABASE_URL": "postgresql://postgres:test@127.0.0.1:1/jammy",
+        "S3_BUCKET": "bucket",
+        "STAGE_DIR": str(tmp_path),
+        "ADMIN_PORT": str(port),
+    }.items():
+        monkeypatch.setenv(key, value)
+
+    monkeypatch.setattr(main.s3, "client", lambda _cfg: Mock())
+    monkeypatch.setattr(main.db, "pool", AsyncMock(return_value=AsyncMock()))
+
+    async def fake_run(self, stop):
+        from prometheus_client.parser import text_string_to_metric_families
+
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as http:
+            body = (await http.get("/metrics")).text
+            families = {f.name: f for f in text_string_to_metric_families(body)}
+            samples = families["jammy_archiver_unacked_messages"].samples
+            assert [s.value for s in samples] == [0.0]
+        stop.set()
+
+    monkeypatch.setattr(main.Archiver, "run", fake_run)
+
+    async def run():
+        stop = asyncio.Event()
+        await main.serve(main.ArchiveConfig.from_env(), stop)
+
+    asyncio.run(run())
+
+
+def test_export_uses_flush_seconds_and_creates_span(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+
+    from archiver import main
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr("archiver.main.trace.get_tracer", provider.get_tracer)
+
+    wait_timeouts = []
+
+    async def fake_wait_for(awaitable, timeout):
+        wait_timeouts.append(timeout)
+        awaitable.close()
+        stop.set()
+        raise TimeoutError
+
+    stop = asyncio.Event()
+    monkeypatch.setattr("archiver.main.asyncio.wait_for", fake_wait_for)
+    monkeypatch.setattr(
+        "archiver.main.DbArchive",
+        lambda *_args, **_kwargs: SimpleNamespace(poll=AsyncMock(return_value=False)),
+    )
+    service = main.Archiver(
+        SimpleNamespace(flush_seconds=17, lateness=timedelta(0)), Mock(), Mock()
+    )
+
+    asyncio.run(service.export(stop))
+    assert wait_timeouts == [17]
+    (span,) = exporter.get_finished_spans()
+    assert span.name == "archive.export"
+    provider.shutdown()

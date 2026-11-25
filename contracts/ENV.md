@@ -34,6 +34,7 @@ An invalid value fails startup. The shared [environment fixtures](testdata/env_c
 | `INGEST_STREAM` | — | Ingest in `jetstream` mode | Instance-specific stream, for example `raw-a1`. |
 | `NATS_STREAMS` | — | Processor and archiver in `jetstream` mode | Comma-separated list of ingest streams with no spaces, for example `raw-a1,raw-a2`. |
 | `S3_BUCKET` | — | Archiver and portal-publisher | S3 bucket. |
+| `S3_PREFIX` | Empty | No | Optional key prefix prepended to every object key written or read by archiver and portal-publisher. |
 | `S3_ENDPOINT` | AWS endpoint | No | S3 endpoint override. |
 | `S3_REGION` | `ap-northeast-2` | No | S3 region. |
 | `S3_FORCE_PATH_STYLE` | `false` | No | Path-style S3 addressing. |

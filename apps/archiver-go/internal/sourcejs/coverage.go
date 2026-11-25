@@ -9,10 +9,11 @@ import (
 	"strings"
 
 	"github.com/cloud4-final/jammy-5th/apps/archiver-go/internal/pq"
+	"github.com/cloud4-final/jammy-5th/apps/archiver-go/internal/seal"
 )
 
 func (a *Archiver) covered(ctx context.Context, key group, seq uint64) (bool, error) {
-	for _, prefix := range []string{key.prefix, "raw-late/" + strings.TrimPrefix(key.prefix, "raw/")} {
+	for _, prefix := range []string{key.prefix, seal.LatePrefix(a.KeyPrefix, key.prefix)} {
 		for object, m := range a.index.Manifests[prefix] {
 			if m.Stream != nil && *m.Stream == key.stream && m.SchemaVersion == key.version && contains(m, seq) {
 				if _, _, ok := bounds(object, prefix, key.ingest); ok {

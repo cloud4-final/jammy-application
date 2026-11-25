@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/cloud4-final/jammy-5th/apps/archiver-go/internal/pq"
+	"github.com/cloud4-final/jammy-5th/libs/go/s3x"
 )
 
 func Eligible(hour, watermark time.Time, lateness time.Duration, direct bool) bool {
@@ -25,7 +26,17 @@ func Eligible(hour, watermark time.Time, lateness time.Duration, direct bool) bo
 }
 
 func Prefix(profile string, ts time.Time) string {
-	return "raw/profile=" + profile + "/dt=" + ts.UTC().Format("2006-01-02") + "/hour=" + ts.UTC().Format("15") + "/"
+	return PrefixWith("", profile, ts)
+}
+
+func PrefixWith(keyPrefix, profile string, ts time.Time) string {
+	return s3x.NormalizePrefix(keyPrefix) + "raw/profile=" + profile + "/dt=" + ts.UTC().Format("2006-01-02") + "/hour=" + ts.UTC().Format("15") + "/"
+}
+
+func LatePrefix(keyPrefix, prefix string) string {
+	normalized := s3x.NormalizePrefix(keyPrefix)
+	rel := strings.TrimPrefix(prefix, normalized)
+	return normalized + "raw-late/" + strings.TrimPrefix(rel, "raw/")
 }
 
 type hourKey struct {
@@ -38,6 +49,7 @@ type hour struct {
 }
 type Index struct {
 	Store     pq.Objects
+	KeyPrefix string
 	Hours     map[hourKey]*hour
 	Refs      map[string]pq.Ref
 	Manifests map[string]map[string]pq.Manifest
@@ -53,12 +65,19 @@ type Document struct {
 }
 
 func Load(ctx context.Context, store pq.Objects, include func(pq.Manifest) bool) (*Index, error) {
+	return LoadWithPrefix(ctx, store, "", include)
+}
+
+func LoadWithPrefix(ctx context.Context, store pq.Objects, keyPrefix string, include func(pq.Manifest) bool) (*Index, error) {
+	keyPrefix = s3x.NormalizePrefix(keyPrefix)
 	index := &Index{
-		Store: store, Hours: make(map[hourKey]*hour), Refs: make(map[string]pq.Ref),
+		Store: store, KeyPrefix: keyPrefix, Hours: make(map[hourKey]*hour), Refs: make(map[string]pq.Ref),
 		Manifests: make(map[string]map[string]pq.Manifest), Orphans: make(map[string]map[string]struct{}),
 		watermark: make(map[string]time.Time),
 	}
-	for _, prefix := range []string{"raw/", "raw-late/"} {
+	rawRoot := keyPrefix + "raw/"
+	lateRoot := keyPrefix + "raw-late/"
+	for _, prefix := range []string{rawRoot, lateRoot} {
 		keys, err := store.List(ctx, prefix)
 		if err != nil {
 			return nil, err
@@ -73,7 +92,7 @@ func Load(ctx context.Context, store pq.Objects, include func(pq.Manifest) bool)
 				continue
 			}
 			switch {
-			case prefix == "raw/" && strings.HasPrefix(name, "_SEALED-") && strings.HasSuffix(name, ".json"):
+			case prefix == rawRoot && strings.HasPrefix(name, "_SEALED-") && strings.HasSuffix(name, ".json"):
 				owner := strings.TrimSuffix(strings.TrimPrefix(name, "_SEALED-"), ".json")
 				h, err := index.hour(folder, owner)
 				if err != nil {
@@ -127,8 +146,9 @@ func (i *Index) hour(prefix, owner string) (*hour, error) {
 	if h := i.Hours[key]; h != nil {
 		return h, nil
 	}
-	components := strings.Split(strings.TrimSuffix(prefix, "/"), "/")
-	if len(components) != 4 {
+	rel := strings.TrimPrefix(prefix, i.KeyPrefix)
+	components := strings.Split(strings.TrimSuffix(rel, "/"), "/")
+	if len(components) != 4 || components[0] != "raw" {
 		return nil, errors.New("invalid archive prefix")
 	}
 	ts, err := time.Parse("dt=2006-01-02/hour=15", components[2]+"/"+components[3])
@@ -150,7 +170,7 @@ func (i *Index) Target(key, owner string) string {
 
 func (i *Index) TargetPrefix(prefix, owner string) string {
 	if h := i.Hours[hourKey{prefix, owner}]; h != nil && h.sealed {
-		return "raw-late/" + strings.TrimPrefix(prefix, "raw/")
+		return LatePrefix(i.KeyPrefix, prefix)
 	}
 	return prefix
 }
@@ -172,7 +192,7 @@ func (i *Index) Record(ref pq.Ref, manifest pq.Manifest, owner string) error {
 		i.Manifests[prefix][ref.Key] = manifest
 		delete(i.Orphans[prefix], ref.Key)
 	}
-	if strings.HasPrefix(ref.Key, "raw/") {
+	if strings.HasPrefix(strings.TrimPrefix(ref.Key, i.KeyPrefix), "raw/") {
 		h, err := i.hour(prefix, owner)
 		if err != nil {
 			return err
