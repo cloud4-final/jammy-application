@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/cloud4-final/jammy-5th/libs/go/gate"
-	pb "github.com/cloud4-final/jammy-5th/libs/go/pb/jammyv1"
+	"github.com/cloud4-final/jammy-application/libs/go/gate"
+	pb "github.com/cloud4-final/jammy-application/libs/go/pb/jammyv1"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
