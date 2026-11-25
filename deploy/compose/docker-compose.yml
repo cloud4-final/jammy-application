@@ -142,11 +142,10 @@ services:
     depends_on:
       pg-primary:
         condition: service_healthy
-    command:
-      - "-path=/migrations"
-      # Keep migration metadata in public even after the jammy schema is created.
-      - "-database=postgres://jammy:jammy@pg-primary:5432/jammy?sslmode=disable&search_path=public"
-      - up
+    entrypoint: ["/migrate-from-env"]
+    command: ["-path", "/migrations", "up"]
+    environment:
+      <<: *db-env
 
   ingest-a1:
     <<: *app

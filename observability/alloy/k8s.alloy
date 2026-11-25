@@ -31,7 +31,15 @@ discovery.relabel "jammy" {
 
 	rule {
 		source_labels = ["__meta_kubernetes_pod_container_image"]
-		regex         = ".*/([^/:@]+)(?::[^@]+)?(?:@.+)?"
+		regex         = "(?:.*/)?([^/:@]+)(?::[^@]+)?(?:@.+)?"
+		replacement   = "$1"
+		target_label  = "service"
+	}
+
+	// Match the application service label in dashboard filters for both implementations.
+	rule {
+		source_labels = ["service"]
+		regex         = "(ingest|processor|archiver)-(?:go|py)"
 		replacement   = "$1"
 		target_label  = "service"
 	}

@@ -23,7 +23,9 @@ def cfg() -> E2EConfig:
 @pytest.fixture(scope="session")
 def stack_ready(cfg: E2EConfig) -> None:
     try:
-        wait_for_ready(admin_ports(cfg.arm, cfg.compose_file))
+        wait_for_ready(
+            admin_ports(cfg.arm, cfg.compose_file, control_only=cfg.control_only)
+        )
     except TimeoutError as exc:
         pytest.fail(
             f"{exc} (ARM={cfg.arm}, IMPL={cfg.impl}). "

@@ -95,8 +95,9 @@ def test_kill9_archiver_exact(
         event_ts = past_start + timedelta(minutes=10)
         expected_ids = {f"e2e-{run_tag}-am-{i}" for i in range(30)}
 
-        create_raw_events_partition(db_conn, partition_name, past_start, past_end)
-        with db_conn.cursor() as cur:
+        # Publish the closed partition and its rows together so the archiver cannot drop it empty.
+        with db_conn.transaction(), db_conn.cursor() as cur:
+            create_raw_events_partition(db_conn, partition_name, past_start, past_end)
             for ev_id in sorted(expected_ids):
                 cur.execute(
                     """

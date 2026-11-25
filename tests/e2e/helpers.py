@@ -51,6 +51,8 @@ class E2EConfig:
     aws_secret_access_key: str
     dynamodb_endpoint: str
     lease_table: str
+    lease_key_name: str
+    lease_key_value: str
     site_id: str
     control_only: bool
     hmac_key_id: str
@@ -108,6 +110,12 @@ class E2EConfig:
             ),
             lease_table=os.environ.get(
                 "E2E_LEASE_TABLE", os.environ.get("LEASE_TABLE", "jammy-site-lease")
+            ),
+            lease_key_name=os.environ.get(
+                "E2E_LEASE_KEY_NAME", os.environ.get("LEASE_KEY_NAME", "lease_id")
+            ),
+            lease_key_value=os.environ.get(
+                "E2E_LEASE_KEY_VALUE", os.environ.get("LEASE_KEY_VALUE", "db-primary")
             ),
             site_id=os.environ.get("E2E_SITE_ID", os.environ.get("SITE_ID", "jammy-a")),
             control_only=os.environ.get("E2E_CONTROL_ONLY", "").strip() == "1",
@@ -174,11 +182,16 @@ def make_dynamodb_client(cfg: E2EConfig) -> Any:
     )
 
 
-def get_site_lease(ddb_client: Any, table_name: str) -> tuple[str, int] | None:
-    """Read the active-site lease item (holder, epoch) from DynamoDB with strong consistency."""
+def get_site_lease(
+    ddb_client: Any,
+    table_name: str,
+    key_name: str = "lease_id",
+    key_value: str = "db-primary",
+) -> tuple[str, int] | None:
+    """Read the site lease item (holder, epoch) from DynamoDB with strong consistency."""
     resp = ddb_client.get_item(
         TableName=table_name,
-        Key={"lease_name": {"S": "active-site"}},
+        Key={key_name: {"S": key_value}},
         ConsistentRead=True,
     )
     item = resp.get("Item")

@@ -332,10 +332,11 @@ def test_direct_db_partition_archived_and_dropped(
     event_ts = past_start + timedelta(minutes=5)
     expected_ids = {f"e2e-{run_tag}-db-{i}" for i in range(20)}
 
-    create_raw_events_partition(db_conn, partition_name, past_start, past_end)
-    # Spec §5.8 seals event hour H only after received_at partitions through H + ceil(SEAL_LATENESS) export.
-    create_raw_events_partition(db_conn, closing_partition_name, past_end, closing_end)
-    with db_conn.cursor() as cur:
+    # The archiver can drop an empty closed partition as soon as it sees it.
+    with db_conn.transaction(), db_conn.cursor() as cur:
+        create_raw_events_partition(db_conn, partition_name, past_start, past_end)
+        # Spec §5.8 seals event hour H after the lateness window's partition also exports.
+        create_raw_events_partition(db_conn, closing_partition_name, past_end, closing_end)
         for ev_id in sorted(expected_ids):
             cur.execute(
                 """

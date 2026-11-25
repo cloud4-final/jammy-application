@@ -94,3 +94,22 @@ def test_release_unlocks_before_close(dsn, monkeypatch):
                 await second.release()
 
     asyncio.run(exercise())
+
+
+def test_leader_ping_reports_health_and_releases_on_error(dsn):
+    async def exercise():
+        async with AsyncConnectionPool(dsn, open=False) as pool:
+            leader = Leader(pool, holder="ping-test")
+            assert await leader.ping() is None
+            generation = await leader.try_acquire()
+            assert generation is not None
+            try:
+                assert await leader.ping() is True
+                await leader.connection.close()
+                assert await leader.ping() is False
+                assert leader.generation is None
+                assert await leader.is_held() is False
+            finally:
+                await leader.release()
+
+    asyncio.run(exercise())

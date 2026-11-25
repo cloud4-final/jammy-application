@@ -14,9 +14,17 @@ COMPOSE_FILE = (
     Path(__file__).resolve().parents[2] / "deploy" / "compose" / "docker-compose.yml"
 )
 POLL_INTERVAL_S = 0.5
+CONTROL_PLANE_SERVICES = frozenset(
+    {"instruction-api", "dispatcher-1", "dispatcher-2", "plantsim"}
+)
 
 
-def admin_ports(arm: str, compose_file: Path = COMPOSE_FILE) -> dict[str, int]:
+def admin_ports(
+    arm: str,
+    compose_file: Path = COMPOSE_FILE,
+    *,
+    control_only: bool = False,
+) -> dict[str, int]:
     config = subprocess.check_output(
         [
             "docker",
@@ -35,6 +43,7 @@ def admin_ports(arm: str, compose_file: Path = COMPOSE_FILE) -> dict[str, int]:
     ports = {
         name: int(port["published"])
         for name, service in json.loads(config)["services"].items()
+        if not control_only or name in CONTROL_PLANE_SERVICES
         for port in service.get("ports", [])
         if port["target"] == 9090
     }
@@ -77,9 +86,10 @@ def wait_for_ready(ports: dict[str, int], timeout_s: float = 90.0) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("arm", choices=("mvp", "split"))
+    parser.add_argument("--control-only", action="store_true")
     args = parser.parse_args()
     try:
-        ports = admin_ports(args.arm)
+        ports = admin_ports(args.arm, control_only=args.control_only)
         wait_for_ready(ports)
     except (TimeoutError, RuntimeError, subprocess.CalledProcessError) as exc:
         parser.exit(1, f"{exc}\n")

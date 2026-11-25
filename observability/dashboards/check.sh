@@ -14,6 +14,35 @@ dashboard_dir = root / "observability/dashboards"
 dashboards = ("platform-overview", "data-pipeline", "control-path", "experiment-run")
 variables = {"run_id", "arm", "site", "service"}
 contract = (root / "contracts/METRICS.md").read_text()
+
+# The service dropdown queries up, so scrape health and application samples
+# must use the same service values regardless of the image implementation.
+compose = (root / "observability/alloy/compose.alloy").read_text()
+k8s = (root / "observability/alloy/k8s.alloy").read_text()
+compose_targets = dict(re.findall(r'\{"__address__" = "([^"]+)", service = ([^,]+),', compose))
+for target, role in (("ingest-a1", "ingest"), ("ingest-a2", "ingest"),
+                     ("processor", "processor"), ("archiver", "archiver")):
+    if compose_targets.get(f"{target}:9090") != json.dumps(role):
+        raise SystemExit(f"Compose up for {target} must use service={role!r} to match application metrics")
+
+service_rules = []
+for rule in re.findall(r"\brule\s*\{(.*?)^\s*\}", k8s, re.MULTILINE | re.DOTALL):
+    if re.search(r'target_label\s*=\s*"service"', rule):
+        source = re.search(r'source_labels\s*=\s*\["([^"]+)"\]', rule)
+        regex = re.search(r'regex\s*=\s*("[^"\n]+")', rule)
+        replacement = re.search(r'replacement\s*=\s*("[^"\n]+")', rule)
+        service_rules.append((source[1], json.loads(regex[1]), json.loads(replacement[1])))
+for role in ("ingest", "processor", "archiver", "portal-publisher"):
+    variants = ("-go", "-py") if role != "portal-publisher" else ("",)
+    for variant in variants:
+        labels = {"__meta_kubernetes_pod_container_image": f"ghcr.io/cloud4-final/jammy-application/{role}{variant}:0.1.0"}
+        for source, regex, replacement in service_rules:
+            match = re.fullmatch(regex, labels.get(source, ""))
+            if match:
+                labels["service"] = re.sub(r"\$(\d+)", lambda group: match[int(group[1])], replacement)
+        value = labels.get("service")
+        if value != role:
+            raise SystemExit(f"Kubernetes up has service={value!r}, expected {role!r}")
 metric_pattern = r"[a-zA-Z_:][a-zA-Z0-9_:]*"
 label_pattern = r"[a-zA-Z_][a-zA-Z0-9_]*"
 label_allowlist = re.search(r"Application label allowlist is (.+?)\. ", contract).group(1)

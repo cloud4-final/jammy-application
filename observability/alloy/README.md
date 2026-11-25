@@ -8,11 +8,13 @@ To test split with the application images present, use the same image implementa
 APPS=1 IMPL=go ARM=split RUN_ID=example-split PROFILE=solar \
   OTEL_EXPORTER_OTLP_ENDPOINT=http://alloy:4317 make up-split up-obs
 curl -fsSG http://127.0.0.1:8428/api/v1/query \
-  --data-urlencode 'query=up{service="ingest-go",arm="split"} == 1'
+  --data-urlencode 'query=up{service="ingest",arm="split"} == 1'
 observability/dashboards/check.sh
 ```
 
 Alloy uses Compose service DNS names and scrapes each listed service at `/metrics` on port 9090. A service absent from the running Compose profile can show `up=0`. Alloy forwards metrics to `/api/v1/write`. The `RUN_ID`, `ARM` and `PROFILE` environment variables supply the `run_id`, `arm` and `profile` external labels. An application sample that already carries a `profile` keeps its value. The OTLP receiver listens on ports 4317 (gRPC) and 4318 (HTTP) within the deployment network and forwards traces to Tempo and logs to Loki.
+
+The dashboard service filter uses the same role names for scrape health and application metrics in Compose and Kubernetes. Both implementations appear as `ingest`, `processor`, and `archiver`. Use `run_id` to select a measured trial.
 
 Alloy v1.20.1 loads the two mounted files from the configuration directory at its default stability level. Both environments use `shared.alloy` for remote write, external labels, and OTLP forwarding.
 

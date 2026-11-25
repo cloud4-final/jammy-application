@@ -227,7 +227,12 @@ def test_dispatcher_leader_failover_no_duplicate_commands(
 
     old_gen, old_holder = poll_until(_current_leader, timeout_s=20.0, desc="initial dispatcher leader")
     old_lease_holder, old_epoch = poll_until(
-        lambda: get_site_lease(dynamodb_client, stack.lease_table),
+        lambda: get_site_lease(
+            dynamodb_client,
+            stack.lease_table,
+            stack.lease_key_name,
+            stack.lease_key_value,
+        ),
         timeout_s=20.0,
         desc="initial DynamoDB site lease",
     )
@@ -283,7 +288,12 @@ def test_dispatcher_leader_failover_no_duplicate_commands(
             assert total_rows == len(assets)
             assert distinct_rows == len(assets)
 
-        lease_after = get_site_lease(dynamodb_client, stack.lease_table)
+        lease_after = get_site_lease(
+            dynamodb_client,
+            stack.lease_table,
+            stack.lease_key_name,
+            stack.lease_key_value,
+        )
         assert lease_after is not None, "DynamoDB site lease item missing after failover"
         new_lease_holder, new_epoch = lease_after
         assert new_lease_holder == stack.site_id
