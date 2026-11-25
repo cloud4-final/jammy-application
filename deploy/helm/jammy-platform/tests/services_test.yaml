@@ -1,0 +1,53 @@
+suite: internal services
+values:
+  - ../values-split.yaml
+  - site-values.yaml
+tests:
+  - it: no_ingress_or_loadbalancer_by_default
+    asserts:
+      - notEqual:
+          path: kind
+          value: Ingress
+      - equal:
+          path: spec.type
+          value: ClusterIP
+        template: service.yaml
+  - it: only_ingest_can_expose_a_node_port
+    set:
+      ingest.instances[0]:
+        name: a1
+        stream: raw-a1
+        service: {type: NodePort, nodePort: 30081}
+    template: service.yaml
+    documentSelector:
+      path: metadata.labels["app.kubernetes.io/component"]
+      value: ingest-a1
+    asserts:
+      - equal:
+          path: spec.ports[0].nodePort
+          value: 30081
+      - notExists:
+          path: spec.ports[?(@.name=="admin")].nodePort
+  - it: global_s3_prefix_sets_S3_PREFIX_only_for_s3_services
+    set:
+      global.s3.prefix: jammy-a
+    template: deployment-app.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: {name: S3_PREFIX, value: jammy-a}
+        documentSelector:
+          path: metadata.labels["app.kubernetes.io/component"]
+          value: archiver
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: {name: S3_PREFIX, value: jammy-a}
+        documentSelector:
+          path: metadata.labels["app.kubernetes.io/component"]
+          value: portal-publisher
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content: {name: S3_PREFIX, value: jammy-a}
+        documentSelector:
+          path: metadata.labels["app.kubernetes.io/component"]
+          value: processor

@@ -1,0 +1,358 @@
+name: jammy-local
+
+x-app: &app
+  read_only: true
+  tmpfs:
+    - /tmp
+  stop_grace_period: 30s
+
+x-common-env: &common-env
+  SITE_ID: ${SITE_ID:-jammy-a}
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+
+x-db-env: &db-env
+  DATABASE_URL: postgres://jammy:jammy@pg-primary:5432/jammy?sslmode=disable
+
+x-aws-env: &aws-env
+  AWS_ACCESS_KEY_ID: jammy
+  AWS_SECRET_ACCESS_KEY: jammy
+  AWS_REGION: ap-northeast-2
+  AWS_DEFAULT_REGION: ap-northeast-2
+
+x-s3-env: &s3-env
+  <<: *aws-env
+  S3_BUCKET: jammy-local
+  S3_ENDPOINT: http://seaweedfs:8333
+  S3_FORCE_PATH_STYLE: "true"
+
+x-pipeline-env: &pipeline-env
+  <<: [*common-env, *db-env]
+  PIPELINE_MODE: ${PIPELINE_MODE:-direct-db}
+  NATS_URL: nats://nats:4222
+
+x-lease-timing: &lease-timing
+  LEASE_TTL_SECONDS: ${LEASE_TTL_SECONDS:-15}
+  LEASE_FENCE_SECONDS: ${LEASE_FENCE_SECONDS:-10}
+
+x-writer-env: &writer-env
+  <<: [*pipeline-env, *lease-timing]
+  WRITE_FENCE: ${WRITE_FENCE:-false}
+
+x-dispatcher-env: &dispatcher-env
+  <<: [*common-env, *db-env, *aws-env, *lease-timing]
+  LEASE_TABLE: ${LEASE_TABLE:-jammy-site-lease}
+  LEASE_KEY_NAME: ${LEASE_KEY_NAME:-lease_id}
+  LEASE_KEY_VALUE: ${LEASE_KEY_VALUE:-db-primary}
+  LEASE_HOLDER: ${LEASE_HOLDER:-${SITE_ID:-jammy-a}}
+  LEASE_RENEW_SECONDS: ${LEASE_RENEW_SECONDS:-5}
+  DYNAMODB_ENDPOINT: http://dynamodb-local:8000
+  PLANT_GATEWAY_URL: http://plantsim:8080
+  SQS_QUEUE_URL: http://elasticmq:9324/000000000000/jammy-instructions
+  SQS_ENDPOINT: http://elasticmq:9324
+
+services:
+  pg-primary:
+    profiles: [mvp, split]
+    image: postgres:17.12-trixie
+    command: ["postgres", "-c", "synchronous_standby_names=${JAMMY_SYNC_STANDBY:-}"]
+    environment:
+      POSTGRES_USER: jammy
+      POSTGRES_PASSWORD: jammy
+      POSTGRES_DB: jammy
+      REPLICATION_PASSWORD: jammy-replica
+      # Local libpq calls during image initialization must finish before standby can start.
+      PGOPTIONS: -c synchronous_commit=local
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pg-primary:/var/lib/postgresql/data
+      - ./pg/primary-init.sh:/docker-entrypoint-initdb.d/primary-init.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 2s
+      timeout: 3s
+      retries: 40
+
+  pg-standby:
+    profiles: [split]
+    image: postgres:17.12-trixie
+    entrypoint: ["/usr/local/bin/standby-entrypoint.sh"]
+    depends_on:
+      pg-primary:
+        condition: service_healthy
+    environment:
+      PGDATA: /var/lib/postgresql/data/pgdata
+      PGPASSFILE: /var/lib/postgresql/data/.pgpass
+      REPLICATION_PASSWORD: jammy-replica
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - pg-standby:/var/lib/postgresql/data
+      - ./pg/standby-entrypoint.sh:/usr/local/bin/standby-entrypoint.sh:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - psql -XAt -U jammy -d jammy -c "SELECT status FROM pg_stat_wal_receiver" | grep -qx streaming
+      interval: 2s
+      timeout: 3s
+      retries: 40
+
+  nats:
+    profiles: [split]
+    image: nats:2.15.3
+    command: ["-c", "/etc/nats/js.conf"]
+    ports:
+      - "127.0.0.1:4222:4222"
+      - "127.0.0.1:8222:8222"
+    volumes:
+      - ./nats/js.conf:/etc/nats/js.conf:ro
+      - nats:/data
+
+  seaweedfs:
+    profiles: [mvp, split]
+    image: chrislusf/seaweedfs:4.54
+    command: ["mini", "-dir=/data"]
+    ports:
+      - "127.0.0.1:8333:8333"
+    volumes:
+      - seaweedfs:/data
+
+  elasticmq:
+    profiles: [mvp, split]
+    image: softwaremill/elasticmq-native:1.7.1
+    ports:
+      - "127.0.0.1:9324:9324"
+    volumes:
+      - ./aws/elasticmq.conf:/opt/elasticmq.conf:ro
+
+  dynamodb-local:
+    profiles: [mvp, split]
+    image: amazon/dynamodb-local:3.3.2
+    command: ["-jar", "DynamoDBLocal.jar", "-sharedDb", "-inMemory"]
+    ports:
+      - "127.0.0.1:8000:8000"
+
+  migrate:
+    <<: *app
+    profiles: [mvp, split]
+    build:
+      context: ../..
+      dockerfile: apps/migrate/Dockerfile
+    image: ghcr.io/cloud4-final/jammy-application/migrate:${TAG:-${JAMMY_LOCAL_TAG:-0.1.0}}
+    depends_on:
+      pg-primary:
+        condition: service_healthy
+    entrypoint: ["/migrate-from-env"]
+    command: ["-path", "/migrations", "up"]
+    environment:
+      <<: *db-env
+
+  ingest-a1:
+    <<: *app
+    profiles: [mvp, split]
+    image: ghcr.io/cloud4-final/jammy-application/ingest-${IMPL:-go}:${TAG:-${JAMMY_LOCAL_TAG:-0.1.0}}
+    environment:
+      <<: *writer-env
+      INSTANCE_ID: ingest-a1
+      INGEST_STREAM: raw-a1
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
+    ports:
+      - "127.0.0.1:18081:8080"
+      - "127.0.0.1:${ADMIN_PORT_INGEST_A1:-19091}:9090"
+
+  ingest-a2:
+    <<: *app
+    profiles: [split]
+    image: ghcr.io/cloud4-final/jammy-application/ingest-${IMPL:-go}:${TAG:-${JAMMY_LOCAL_TAG:-0.1.0}}
+    environment:
+      <<: *writer-env
+      PIPELINE_MODE: jetstream
+      INSTANCE_ID: ingest-a2
+      INGEST_STREAM: raw-a2
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
+    ports:
+      - "127.0.0.1:18082:8080"
+      - "127.0.0.1:${ADMIN_PORT_INGEST_A2:-19092}:9090"
+
+  instruction-api:
+    <<: *app
+    profiles: [mvp, split]
+    image: ghcr.io/cloud4-final/jammy-application/instruction-api:${TAG:-${JAMMY_LOCAL_TAG:-0.1.0}}
+    environment:
+      <<: [*common-env, *db-env]
+      HMAC_KEYS_FILE: /run/configs/hmac-keys.json
+    configs:
+      - source: local-hmac-keys
+        target: /run/configs/hmac-keys.json
+    ports:
+      - "127.0.0.1:18080:8080"
+      - "127.0.0.1:${ADMIN_PORT_INSTRUCTION_API:-19093}:9090"
+
+  dispatcher-1:
+    <<: *app
+    profiles: [mvp, split]
+    image: ghcr.io/cloud4-final/jammy-application/dispatcher:${TAG:-${JAMMY_LOCAL_TAG:-0.1.0}}
+    environment:
+      <<: *dispatcher-env
+      INSTANCE_ID: dispatcher-1
+      LEASE_MODE: ${LEASE_MODE:-disabled}
+      LEASE_AUTO_ACQUIRE: "true"
+    ports:
+      - "127.0.0.1:${ADMIN_PORT_DISPATCHER_1:-19094}:9090"
+
+  dispatcher-2:
+    <<: *app
+    profiles: [split]
+    image: ghcr.io/cloud4-final/jammy-application/dispatcher:${TAG:-${JAMMY_LOCAL_TAG:-0.1.0}}
+    environment:
+      <<: *dispatcher-env
+      INSTANCE_ID: dispatcher-2
+      LEASE_MODE: dynamodb
+      LEASE_AUTO_ACQUIRE: "true"
+    ports:
+      - "127.0.0.1:${ADMIN_PORT_DISPATCHER_2:-19095}:9090"
+
+  processor:
+    <<: *app
+    profiles: [mvp, split]
+    image: ghcr.io/cloud4-final/jammy-application/processor-${IMPL:-go}:${TAG:-${JAMMY_LOCAL_TAG:-0.1.0}}
+    environment:
+      <<: *writer-env
+      NATS_STREAMS: raw-a1,raw-a2
+    ports:
+      - "127.0.0.1:${ADMIN_PORT_PROCESSOR:-19096}:9090"
+
+  archiver:
+    <<: *app
+    profiles: [mvp, split]
+    image: ghcr.io/cloud4-final/jammy-application/archiver-${IMPL:-go}:${TAG:-${JAMMY_LOCAL_TAG:-0.1.0}}
+    environment:
+      <<: [*pipeline-env, *s3-env]
+      NATS_STREAMS: raw-a1,raw-a2
+    ports:
+      - "127.0.0.1:${ADMIN_PORT_ARCHIVER:-19097}:9090"
+    volumes:
+      - archiver-stage:/stage
+
+  portal-publisher:
+    <<: *app
+    profiles: [mvp, split]
+    image: ghcr.io/cloud4-final/jammy-application/portal-publisher:${TAG:-${JAMMY_LOCAL_TAG:-0.1.0}}
+    environment:
+      <<: [*common-env, *db-env, *s3-env]
+    ports:
+      - "127.0.0.1:${ADMIN_PORT_PORTAL_PUBLISHER:-19098}:9090"
+
+  plantsim:
+    <<: *app
+    profiles: [mvp, split]
+    image: ghcr.io/cloud4-final/jammy-application/plantsim:${TAG:-${JAMMY_LOCAL_TAG:-0.1.0}}
+    environment:
+      <<: *common-env
+    ports:
+      - "127.0.0.1:18090:8080"
+      - "127.0.0.1:${ADMIN_PORT_PLANTSIM:-19099}:9090"
+
+  grafana:
+    profiles: [obs]
+    image: grafana/grafana:13.3.1
+    ports:
+      - "127.0.0.1:3000:3000"
+    configs:
+      - source: grafana-datasources
+        target: /etc/grafana/provisioning/datasources/jammy.yaml
+      - source: grafana-dashboards
+        target: /etc/grafana/provisioning/dashboards/jammy.yaml
+    volumes:
+      - ../../observability/dashboards:/var/lib/grafana/dashboards/jammy:ro
+
+  victoriametrics:
+    profiles: [obs]
+    image: victoriametrics/victoria-metrics:v1.156.0
+    ports:
+      - "127.0.0.1:8428:8428"
+
+  alloy:
+    profiles: [obs]
+    image: grafana/alloy:v1.20.1
+    command: ["run", "--storage.path=/var/lib/alloy/data", "/etc/alloy/jammy"]
+    environment:
+      RUN_ID: ${RUN_ID:-}
+      ARM: ${ARM:-}
+      PROFILE: ${PROFILE:-}
+      IMPL: ${IMPL:-go}
+      SITE_ID: ${SITE_ID:-jammy-a}
+    volumes:
+      - ../../observability/alloy/shared.alloy:/etc/alloy/jammy/shared.alloy:ro
+      - ../../observability/alloy/compose.alloy:/etc/alloy/jammy/compose.alloy:ro
+
+  loki:
+    profiles: [obs]
+    image: grafana/loki:3.7.10
+
+  tempo:
+    profiles: [obs]
+    image: grafana/tempo:3.1.1
+    command:
+      - "-target=all"
+      - "-config.file=/etc/tempo/jammy.yaml"
+    configs:
+      - source: tempo-local
+        target: /etc/tempo/jammy.yaml
+
+configs:
+  grafana-datasources:
+    content: |
+      apiVersion: 1
+      datasources:
+        - name: VictoriaMetrics
+          uid: jammy-metrics
+          type: prometheus
+          access: proxy
+          url: http://victoriametrics:8428
+          isDefault: true
+          jsonData:
+            timeInterval: 60s
+        - name: Loki
+          uid: jammy-logs
+          type: loki
+          access: proxy
+          url: http://loki:3100
+        - name: Tempo
+          uid: jammy-traces
+          type: tempo
+          access: proxy
+          url: http://tempo:3200
+  grafana-dashboards:
+    content: |
+      apiVersion: 1
+      providers:
+        - name: jammy
+          folder: JAMMY
+          type: file
+          options:
+            path: /var/lib/grafana/dashboards/jammy
+  tempo-local:
+    content: |
+      distributor:
+        receivers:
+          otlp:
+            protocols:
+              grpc:
+                endpoint: 0.0.0.0:4317
+      storage:
+        trace:
+          backend: local
+          local:
+            path: /tmp/tempo/blocks
+          wal:
+            path: /tmp/tempo/wal
+  local-hmac-keys:
+    file: ./.local-hmac-keys.json
+
+volumes:
+  pg-primary:
+  pg-standby:
+  nats:
+  seaweedfs:
+  archiver-stage:

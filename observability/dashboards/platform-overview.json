@@ -1,0 +1,405 @@
+{
+  "uid": "platform-overview",
+  "title": "JAMMY Platform Overview",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "timezone": "utc",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "name": "run_id",
+        "label": "Run Id",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "jammy-metrics"
+        },
+        "query": "label_values(up, run_id)",
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "refresh": 1,
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "arm",
+        "label": "Arm",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "jammy-metrics"
+        },
+        "query": "label_values(up, arm)",
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "refresh": 1,
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "site",
+        "label": "Site",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "jammy-metrics"
+        },
+        "query": "label_values(up, site)",
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "refresh": 1,
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "service",
+        "label": "Service",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "jammy-metrics"
+        },
+        "query": "label_values(up, service)",
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "refresh": 1,
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Scrape health by instance",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "jammy-metrics"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "jammy-metrics"
+          },
+          "expr": "up{run_id=~\"${run_id:regex}\",arm=~\"${arm:regex}\",site=~\"${site:regex}\",service=~\"${service:regex}\"}",
+          "legendFormat": "{{service}} / {{instance}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "HTTP request rate",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "jammy-metrics"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "jammy-metrics"
+          },
+          "expr": "sum by (service) (rate(http_server_request_duration_seconds_count{run_id=~\"${run_id:regex}\",arm=~\"${arm:regex}\",site=~\"${site:regex}\",service=~\"${service:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{service}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Worker operation rate",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "jammy-metrics"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "jammy-metrics"
+          },
+          "expr": "sum by (service) (rate(jammy_processor_batches_total{run_id=~\"${run_id:regex}\",arm=~\"${arm:regex}\",site=~\"${site:regex}\",service=~\"${service:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{service}} batches"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "jammy-metrics"
+          },
+          "expr": "sum by (service) (rate(jammy_dispatcher_commands_total{run_id=~\"${run_id:regex}\",arm=~\"${arm:regex}\",site=~\"${site:regex}\",service=~\"${service:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{service}} commands"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "jammy-metrics"
+          },
+          "expr": "sum by (service) (rate(jammy_dispatcher_sqs_total{run_id=~\"${run_id:regex}\",arm=~\"${arm:regex}\",site=~\"${site:regex}\",service=~\"${service:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{service}} SQS"
+        },
+        {
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "jammy-metrics"
+          },
+          "expr": "sum by (service) (rate(jammy_portal_publish_total{run_id=~\"${run_id:regex}\",arm=~\"${arm:regex}\",site=~\"${site:regex}\",service=~\"${service:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{service}} publishes"
+        },
+        {
+          "refId": "E",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "jammy-metrics"
+          },
+          "expr": "sum by (service) (rate(jammy_plantsim_commands_total{run_id=~\"${run_id:regex}\",arm=~\"${arm:regex}\",site=~\"${site:regex}\",service=~\"${service:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{service}} commands"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Error rate by service",
+      "description": "HTTP status \u2265500 and operation result=error are displayed as separate series.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "jammy-metrics"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "jammy-metrics"
+          },
+          "expr": "sum by (service) (rate(http_server_request_duration_seconds_count{run_id=~\"${run_id:regex}\",arm=~\"${arm:regex}\",site=~\"${site:regex}\",service=~\"${service:regex}\",http_response_status_code=~\"5[0-9]{2}|[6-9][0-9]{2}|[1-9][0-9]{3,}\"}[$__rate_interval]))",
+          "legendFormat": "{{service}} HTTP \u2265500"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "jammy-metrics"
+          },
+          "expr": "sum by (service) (rate(jammy_instruction_requests_total{run_id=~\"${run_id:regex}\",arm=~\"${arm:regex}\",site=~\"${site:regex}\",service=~\"${service:regex}\",result=\"error\"}[$__rate_interval]))",
+          "legendFormat": "{{service}} instruction errors"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "jammy-metrics"
+          },
+          "expr": "sum by (service) (rate(jammy_processor_batches_total{run_id=~\"${run_id:regex}\",arm=~\"${arm:regex}\",site=~\"${site:regex}\",service=~\"${service:regex}\",result=\"error\"}[$__rate_interval]))",
+          "legendFormat": "{{service}} batches"
+        },
+        {
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "jammy-metrics"
+          },
+          "expr": "sum by (service) (rate(jammy_dispatcher_commands_total{run_id=~\"${run_id:regex}\",arm=~\"${arm:regex}\",site=~\"${site:regex}\",service=~\"${service:regex}\",result=\"error\"}[$__rate_interval]))",
+          "legendFormat": "{{service}} commands"
+        },
+        {
+          "refId": "E",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "jammy-metrics"
+          },
+          "expr": "sum by (service) (rate(jammy_dispatcher_sqs_total{run_id=~\"${run_id:regex}\",arm=~\"${arm:regex}\",site=~\"${site:regex}\",service=~\"${service:regex}\",result=\"error\"}[$__rate_interval]))",
+          "legendFormat": "{{service}} SQS"
+        },
+        {
+          "refId": "F",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "jammy-metrics"
+          },
+          "expr": "sum by (service) (rate(jammy_portal_publish_total{run_id=~\"${run_id:regex}\",arm=~\"${arm:regex}\",site=~\"${site:regex}\",service=~\"${service:regex}\",result=\"error\"}[$__rate_interval]))",
+          "legendFormat": "{{service}} publishes"
+        },
+        {
+          "refId": "G",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "jammy-metrics"
+          },
+          "expr": "sum by (service) (rate(jammy_plantsim_commands_total{run_id=~\"${run_id:regex}\",arm=~\"${arm:regex}\",site=~\"${site:regex}\",service=~\"${service:regex}\",result=\"error\"}[$__rate_interval]))",
+          "legendFormat": "{{service}} commands"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "HTTP p99",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "jammy-metrics"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "jammy-metrics"
+          },
+          "expr": "histogram_quantile(0.99, sum by (service, le) (rate(http_server_request_duration_seconds_bucket{run_id=~\"${run_id:regex}\",arm=~\"${arm:regex}\",site=~\"${site:regex}\",service=~\"${service:regex}\"}[$__rate_interval])))",
+          "legendFormat": "{{service}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Worker duration p99",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "jammy-metrics"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "jammy-metrics"
+          },
+          "expr": "histogram_quantile(0.99, sum by (service, le) (rate(jammy_ingest_store_duration_seconds_bucket{run_id=~\"${run_id:regex}\",arm=~\"${arm:regex}\",site=~\"${site:regex}\",service=~\"${service:regex}\"}[$__rate_interval])))",
+          "legendFormat": "{{service}} store"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "jammy-metrics"
+          },
+          "expr": "histogram_quantile(0.99, sum by (service, le) (rate(jammy_processor_commit_duration_seconds_bucket{run_id=~\"${run_id:regex}\",arm=~\"${arm:regex}\",site=~\"${site:regex}\",service=~\"${service:regex}\"}[$__rate_interval])))",
+          "legendFormat": "{{service}} commit"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "jammy-metrics"
+          },
+          "expr": "histogram_quantile(0.99, sum by (service, le) (rate(jammy_archiver_upload_duration_seconds_bucket{run_id=~\"${run_id:regex}\",arm=~\"${arm:regex}\",site=~\"${site:regex}\",service=~\"${service:regex}\"}[$__rate_interval])))",
+          "legendFormat": "{{service}} upload"
+        },
+        {
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "jammy-metrics"
+          },
+          "expr": "histogram_quantile(0.99, sum by (service, le) (rate(jammy_dispatcher_dispatch_duration_seconds_bucket{run_id=~\"${run_id:regex}\",arm=~\"${arm:regex}\",site=~\"${site:regex}\",service=~\"${service:regex}\"}[$__rate_interval])))",
+          "legendFormat": "{{service}} dispatch"
+        }
+      ]
+    }
+  ]
+}
