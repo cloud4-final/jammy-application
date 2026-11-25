@@ -16,6 +16,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 func TestSetupPropagatesTraceContextAndBaggage(t *testing.T) {
@@ -39,6 +40,34 @@ func TestSetupPropagatesTraceContextAndBaggage(t *testing.T) {
 		if output[key] != value {
 			t.Errorf("%s = %q, want %q", key, output[key], value)
 		}
+	}
+}
+
+func TestSetupInitializesTracerWithoutOTLPEndpoint(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT_FILE", "")
+	prevTracer := otel.GetTracerProvider()
+	prevProp := otel.GetTextMapPropagator()
+	otel.SetTracerProvider(noop.NewTracerProvider())
+	t.Cleanup(func() {
+		otel.SetTracerProvider(prevTracer)
+		otel.SetTextMapPropagator(prevProp)
+	})
+	_, shutdown, err := obs.Setup("ingest", config.Common{SiteID: "site-a", InstanceID: "ingest-a1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = shutdown(context.Background()) })
+
+	ctx, span := otel.Tracer("ingest").Start(context.Background(), "op")
+	defer span.End()
+	if !span.SpanContext().IsValid() {
+		t.Fatal("expected valid SpanContext when OTLP export is disabled")
+	}
+	carrier := propagation.MapCarrier{}
+	otel.GetTextMapPropagator().Inject(ctx, carrier)
+	if carrier["traceparent"] == "" {
+		t.Fatal("expected traceparent header to be injected")
 	}
 }
 

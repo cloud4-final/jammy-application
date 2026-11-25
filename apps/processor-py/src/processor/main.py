@@ -12,6 +12,7 @@ from jammy_common import db, lifecycle, nats, obs
 from jammy_common.admin import AdminServer
 from jammy_common.config import (
     CommonConfig,
+    ConfigError,
     config_error_exit,
     env,
     env_duration,
@@ -35,6 +36,8 @@ from processor.state import LatestState
 
 LOGGER = logging.getLogger(__name__)
 RETRY_ERRORS = (NatsError, psycopg.Error, TimeoutError)
+MAX_DURATION_SECONDS = (2**63 - 1) // 10**9  # Go time.Duration stores int64 nanoseconds.
+MAX_CONSUMER_LIMIT = 2**31 - 1
 _TRACE_PROPAGATOR = TraceContextTextMapPropagator()
 
 
@@ -98,6 +101,13 @@ def _start_batch_span(tracer: trace.Tracer, stream: str, messages):
     )
 
 
+def _bounded_positive_int(name: str, default: int, maximum: int) -> int:
+    value = positive_int(name, default)
+    if value > maximum:
+        raise ConfigError(f"{name} must be at most {maximum}")
+    return value
+
+
 @dataclass(frozen=True)
 class ProcessorConfig:
     common: CommonConfig
@@ -122,18 +132,26 @@ class ProcessorConfig:
             streams = tuple(
                 parse_list("NATS_STREAMS", env("NATS_STREAMS", required=True), unique=True)
             )
-        past = timedelta(seconds=env_duration("GATE_MAX_PAST", "24h"))
+        try:
+            past_seconds = env_duration("GATE_MAX_PAST", "24h")
+        except ConfigError:
+            raise
+        except ValueError:
+            raise ConfigError("invalid GATE_MAX_PAST") from None
+        if past_seconds > MAX_DURATION_SECONDS:
+            raise ConfigError(f"GATE_MAX_PAST must be at most {MAX_DURATION_SECONDS}s")
+        past = timedelta(seconds=past_seconds)
         ratio = env_ratio("ANOMALY_DROP_RATIO", "0.5", float)
         db.worker_pool_limits(1, 0)
         return cls(
             common,
             env("CONSUMER_NAME", "processor", required=True),
             streams,
-            positive_int("ACK_WAIT_SECONDS", 30),
-            positive_int("MAX_ACK_PENDING", 1000),
-            positive_int("PROCESSOR_MAX_DELIVER", 10),
-            positive_int("FETCH_BATCH", 64),
-            positive_int("STATE_FLUSH_SECONDS", 1),
+            _bounded_positive_int("ACK_WAIT_SECONDS", 30, MAX_DURATION_SECONDS),
+            _bounded_positive_int("MAX_ACK_PENDING", 1000, MAX_CONSUMER_LIMIT),
+            _bounded_positive_int("PROCESSOR_MAX_DELIVER", 10, MAX_CONSUMER_LIMIT),
+            _bounded_positive_int("FETCH_BATCH", 64, MAX_CONSUMER_LIMIT),
+            _bounded_positive_int("STATE_FLUSH_SECONDS", 1, MAX_DURATION_SECONDS),
             past,
             ratio,
             write_fence_age(),
@@ -155,6 +173,7 @@ class Processor:
         self.lag = meter.create_gauge("jammy_processor_lag", unit="s")
         self.client = None
         self.database_ready = asyncio.Event()
+        self.database_poll_ready = False
         self.prepared = set()
         self.pending_by_stream = {}
         self.lag_by_stream = {}
@@ -162,13 +181,12 @@ class Processor:
     async def is_ready(self):
         if not self.database_ready.is_set():
             return False
-        if self.config.streams and (
-            self.client is None or len(self.prepared) != len(self.config.streams)
-        ):
-            return False
-        if self.client is not None and not await nats.check_streams(
-            self.client, self.config.streams
-        ):
+        if self.config.streams:
+            if self.client is None or len(self.prepared) != len(self.config.streams):
+                return False
+            if not await nats.check_streams(self.client, self.config.streams):
+                return False
+        elif not self.database_poll_ready:
             return False
         return await db.ping(self.pool)
 
@@ -303,6 +321,9 @@ class Processor:
                 if retry:
                     await asyncio.sleep(1)
                     continue
+            elif lag:
+                lag = 0
+                self.observe_stream(source.stream, self.pending_by_stream[source.stream], lag)
             try:
                 pending = await source.pending()
             except RETRY_ERRORS as error:
@@ -319,6 +340,7 @@ class Processor:
         self.pending.set(0)
         while not stop.is_set():
             if not self.database_ready.is_set():
+                self.database_poll_ready = False
                 await asyncio.sleep(1)
                 continue
             started = monotonic()
@@ -329,6 +351,7 @@ class Processor:
             ) as span:
                 try:
                     readings, lag = await source.poll()
+                    self.database_poll_ready = True
                     self.lag.set(lag)
                     if readings:
                         span.set_attribute("batch.events", len(readings))
@@ -338,9 +361,11 @@ class Processor:
                     else:
                         idle = True
                 except Fenced:
+                    self.database_poll_ready = True
                     self.batches.add(1, {"result": "fenced"})
                     retry = True
                 except RETRY_ERRORS as error:
+                    self.database_poll_ready = False
                     span.record_exception(error)
                     span.set_status(trace.StatusCode.ERROR, str(error))
                     self.batches.add(1, {"result": "error"})

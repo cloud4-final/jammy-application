@@ -1,5 +1,7 @@
 """OpenTelemetry and Prometheus setup for one service process."""
 
+import os
+
 from opentelemetry import metrics, trace
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.exporter.prometheus import PrometheusMetricReader
@@ -16,7 +18,7 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from prometheus_client import CollectorRegistry
 
 from . import lifecycle
-from .config import CommonConfig, env
+from .config import CommonConfig, ConfigError, env, validate_http_endpoint
 
 HTTP_BUCKETS = (
     0.001,
@@ -60,6 +62,9 @@ class _FallbackView(View):
 
 
 def _resource(service: str, cfg: CommonConfig) -> Resource:
+    attributes = os.getenv("OTEL_RESOURCE_ATTRIBUTES", "")
+    if attributes and any("=" not in pair for pair in attributes.split(",")):
+        raise ConfigError("invalid OTEL_RESOURCE_ATTRIBUTES")
     return Resource.create(
         {
             "service.name": service,
@@ -71,10 +76,20 @@ def _resource(service: str, cfg: CommonConfig) -> Resource:
     )
 
 
+def otlp_endpoint() -> str:
+    """Return the validated OTEL_EXPORTER_OTLP_ENDPOINT, or empty string when unset."""
+    endpoint = env("OTEL_EXPORTER_OTLP_ENDPOINT")
+    return validate_http_endpoint("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint) if endpoint else ""
+
+
 def setup_tracing(service: str, cfg: CommonConfig) -> None:
+    _setup_tracing(service, cfg, otlp_endpoint())
+
+
+def _setup_tracing(service: str, cfg: CommonConfig, endpoint: str) -> None:
     tracer_provider = TracerProvider(resource=_resource(service, cfg), shutdown_on_exit=False)
     lifecycle.on_shutdown(tracer_provider.shutdown)
-    if endpoint := env("OTEL_EXPORTER_OTLP_ENDPOINT"):
+    if endpoint:
         tracer_provider.add_span_processor(
             BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint))
         )
@@ -82,6 +97,7 @@ def setup_tracing(service: str, cfg: CommonConfig) -> None:
 
 
 def setup(service: str, cfg: CommonConfig) -> Meter:
+    endpoint = otlp_endpoint()
     resource = _resource(service, cfg)
     reader = PrometheusMetricReader(
         registry=REGISTRY,
@@ -124,5 +140,5 @@ def setup(service: str, cfg: CommonConfig) -> Meter:
     lifecycle.on_shutdown(lambda: provider.shutdown(timeout_millis=cfg.shutdown_timeout_s * 1000))
     metrics.set_meter_provider(provider)
 
-    setup_tracing(service, cfg)
+    _setup_tracing(service, cfg, endpoint)
     return provider.get_meter(service)

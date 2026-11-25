@@ -6,10 +6,11 @@ from collections.abc import Awaitable, Callable
 from contextlib import contextmanager
 
 import uvicorn
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
-from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from prometheus_client.exposition import choose_encoder
 
+from .http import HeaderTimeoutProtocol
 from .obs import REGISTRY
 
 
@@ -38,7 +39,15 @@ class AdminServer:
         app.add_api_route("/livez", self._livez, methods=["GET"])
         app.add_api_route("/readyz", self._readyz, methods=["GET"])
         app.add_api_route("/metrics", self._metrics, methods=["GET"])
-        self._server = _Server(uvicorn.Config(app, access_log=False, log_config=None, lifespan="off"))
+        self._server = _Server(
+            uvicorn.Config(
+                app,
+                access_log=False,
+                log_config=None,
+                lifespan="off",
+                http=HeaderTimeoutProtocol,
+            )
+        )
         self._task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
@@ -101,5 +110,10 @@ class AdminServer:
             status_code=200 if ready else 503,
         )
 
-    async def _metrics(self) -> Response:
-        return Response(generate_latest(REGISTRY), headers={"Content-Type": CONTENT_TYPE_LATEST})
+    async def _metrics(self, request: Request) -> Response:
+        try:
+            encode, content_type = choose_encoder(request.headers.get("accept", ""))
+        except (TypeError, ValueError):
+            # The encoder can raise when Accept contains an invalid version.
+            encode, content_type = choose_encoder("")
+        return Response(encode(REGISTRY), headers={"Content-Type": content_type})

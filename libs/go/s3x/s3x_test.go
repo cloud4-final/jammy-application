@@ -40,6 +40,15 @@ func TestClientSignsPathStyleCustomEndpoint(t *testing.T) {
 	}
 }
 
+func TestNewRejectsInvalidEndpointAtStartup(t *testing.T) {
+	t.Setenv("S3_ENDPOINT_FILE", "")
+	t.Setenv("S3_ENDPOINT", "http://")
+	client, err := New(context.Background())
+	if client != nil || err == nil || err.Error() != "invalid S3_ENDPOINT" {
+		t.Fatalf("New() returned client: %t, error: %v, want invalid S3_ENDPOINT", client != nil, err)
+	}
+}
+
 func TestPrefixNormalizationAndFileOverride(t *testing.T) {
 	for _, tc := range []struct {
 		raw, want string

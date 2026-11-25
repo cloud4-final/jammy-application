@@ -123,7 +123,7 @@ class JetStreamSource:
         try:
             async with write_connection(self.pool, self.fence) as conn:
                 for index in sorted(decoded, key=lambda i: decoded[i][0]):
-                    batch_id, _, _ = decoded[index]
+                    batch_id, _, samples = decoded[index]
                     claim = await conn.execute(
                         """INSERT INTO jammy.processed_batches (consumer, batch_id)
                            VALUES (%s, %s) ON CONFLICT DO NOTHING RETURNING 1""",
@@ -132,7 +132,6 @@ class JetStreamSource:
                     results[index] = (
                         "ok" if await claim.fetchone() is not None else "duplicate"
                     )
-                for index, (_, _, samples) in decoded.items():
                     if results[index] == "ok":
                         readings.extend(samples)
                 buckets = fold(readings)
