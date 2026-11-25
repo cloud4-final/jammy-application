@@ -16,7 +16,6 @@ from threading import BoundedSemaphore
 from time import monotonic
 from typing import Protocol
 
-import h11
 import psycopg
 import uvicorn
 from fastapi import FastAPI, Request
@@ -34,8 +33,11 @@ from jammy_common.config import (
     env_duration,
     positive_int,
     positive_size,
+    validate_database_url,
+    validate_nats_url,
 )
 from jammy_common.gate import GateConfig, GateResult, validate
+from jammy_common.http import HeaderTimeoutProtocol
 from jammy_common.logging import setup as setup_logging
 from jammy_common.pb.envelope_pb2 import EventBatch
 from jammy_common.write_fence import Fence, Fenced, write_fence_age
@@ -44,7 +46,6 @@ from opentelemetry import trace
 from opentelemetry.metrics import Meter, Observation
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 from starlette.requests import ClientDisconnect
-from uvicorn.protocols.http.h11_impl import H11Protocol
 
 LOGGER = logging.getLogger(__name__)
 ROUTE = "/v1/batches"
@@ -72,10 +73,10 @@ class IngestConfig:
         workers = positive_int("WEB_CONCURRENCY", os.process_cpu_count() or 1)
         stream = ""
         if common.pipeline_mode == "jetstream":
-            env("NATS_URL", required=True)
+            validate_nats_url(env("NATS_URL", required=True))
             stream = env("INGEST_STREAM", required=True)
         else:
-            env("DATABASE_URL", required=True)
+            validate_database_url(env("DATABASE_URL", required=True))
             db.worker_pool_limits(workers, 0)
         quarantine_age = env_duration("QUARANTINE_MAX_AGE", "168h")
         if quarantine_age <= 0 or quarantine_age > (2**63 - 1) // 10**9:
@@ -436,31 +437,6 @@ class Server(uvicorn.Server):
     def capture_signals(self):
         # The common lifecycle owns signals and the drain deadline.
         yield
-
-
-class HeaderTimeoutProtocol(H11Protocol):
-    header_timer: asyncio.TimerHandle | None = None
-
-    def connection_made(self, transport):
-        super().connection_made(transport)
-        self.header_timer = self.loop.call_later(5, transport.close)
-
-    def connection_lost(self, exc):
-        self.cancel_header_timer()
-        super().connection_lost(exc)
-
-    def cancel_header_timer(self):
-        if self.header_timer is not None:
-            self.header_timer.cancel()
-            self.header_timer = None
-
-    def handle_events(self):
-        if self.conn.their_state is h11.IDLE and self.header_timer is None:
-            self.header_timer = self.loop.call_later(5, self.transport.close)
-        prior_cycle = self.cycle
-        super().handle_events()
-        if self.cycle is not prior_cycle:
-            self.cancel_header_timer()
 
 
 async def _serve_worker(

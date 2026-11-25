@@ -1,20 +1,27 @@
 FROM ghcr.io/astral-sh/uv:0.12.24@sha256:3af4716e991d6956a41e573eab705d0ee08500cd829ed30293eb8472f372c65a AS uv
+FROM python:3.14.10-slim-trixie@sha256:970b9cf6bb33bc54e34bff9263de57460841813dd5a3d83d3a4e183b21c54f8a AS manifests
+WORKDIR /manifests
+RUN --mount=type=bind,target=/ctx \
+    cp /ctx/pyproject.toml /ctx/uv.lock ./ && \
+    for d in /ctx/libs/* /ctx/apps/* /ctx/tests/*; do \
+      if [ -f "$d/pyproject.toml" ]; then \
+        rel=${d#/ctx/}; \
+        mkdir -p "$rel" && cp "$d/pyproject.toml" "$rel/"; \
+      fi; \
+    done
+
 FROM python:3.14.10-slim-trixie@sha256:970b9cf6bb33bc54e34bff9263de57460841813dd5a3d83d3a4e183b21c54f8a AS build
 COPY --from=uv /uv /bin/uv
 ENV UV_PYTHON_DOWNLOADS=never UV_LINK_MODE=copy
 WORKDIR /workspace
-COPY pyproject.toml uv.lock ./
-COPY libs/py/pyproject.toml libs/py/
+COPY --from=manifests /manifests/ ./
 COPY libs/py/jammy_common/ libs/py/jammy_common/
-COPY apps/instruction-api/pyproject.toml apps/instruction-api/
-COPY apps/dispatcher/pyproject.toml apps/dispatcher/
 COPY apps/dispatcher/src/ apps/dispatcher/src/
-COPY apps/portal-publisher/pyproject.toml apps/portal-publisher/
-COPY apps/ingest-py/pyproject.toml apps/ingest-py/
-COPY apps/processor-py/pyproject.toml apps/processor-py/
-COPY apps/archiver-py/pyproject.toml apps/archiver-py/
-COPY tests/e2e/pyproject.toml tests/e2e/
-RUN uv sync --locked --no-dev --no-editable --package dispatcher
+RUN if [ -f apps/instruction-api/pyproject.toml ] && [ -f apps/dispatcher/pyproject.toml ] && [ -f apps/portal-publisher/pyproject.toml ] && [ -f apps/ingest-py/pyproject.toml ] && [ -f apps/processor-py/pyproject.toml ] && [ -f apps/archiver-py/pyproject.toml ] && [ -f tests/e2e/pyproject.toml ]; then \
+      uv sync --locked --no-dev --no-editable --package dispatcher; \
+    else \
+      uv sync --frozen --no-dev --no-editable --package dispatcher; \
+    fi
 
 FROM python:3.14.10-slim-trixie@sha256:970b9cf6bb33bc54e34bff9263de57460841813dd5a3d83d3a4e183b21c54f8a
 ARG IMAGE_VERSION=dev

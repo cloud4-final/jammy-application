@@ -125,18 +125,19 @@ async def serve(stop: asyncio.Event, cfg: CommonConfig) -> None:
                     tasks.create_task(_watch_fence(stop, dispatcher))
                 while not stop.is_set():
                     delay = interval
-                    leader_gauge.set(0)
-                    lease_gauge.set(0)
+                    is_leader = False
+                    lease_active = False
                     try:
                         previous_generation = leader.generation
                         if (generation := await leader.try_acquire()) is not None:
+                            is_leader = True
                             if generation != previous_generation:
                                 renew_requested.set()
-                            leader_gauge.set(1)
-                            if (
-                                await dispatcher.active_lease()
-                            ).active and not stop.is_set():
-                                lease_gauge.set(1)
+                            lease_active = (
+                                (await dispatcher.active_lease()).active
+                                and not stop.is_set()
+                            )
+                            if lease_active:
                                 if sqs is not None:
                                     drained = await sqs.drain_once(
                                         leader.transaction, dispatcher.active_lease
@@ -145,7 +146,8 @@ async def serve(stop: asyncio.Event, cfg: CommonConfig) -> None:
                                         delay = ERROR_BACKOFF_SECONDS
                                 if not stop.is_set():
                                     await dispatcher.dispatch_one()
-                                if (await dispatcher.active_lease()).active:
+                                lease_active = (await dispatcher.active_lease()).active
+                                if lease_active:
                                     await dispatcher.expire()
                                     async with leader.transaction() as conn:
                                         await check_compliance(
@@ -157,10 +159,12 @@ async def serve(stop: asyncio.Event, cfg: CommonConfig) -> None:
                         logger.warning(
                             "Dispatch cycle failed (%s)", type(error).__name__
                         )
-                        lease_gauge.set(0)
+                        is_leader = False
+                        lease_active = False
                         await leader.release()
-                        leader_gauge.set(0)
                         delay = ERROR_BACKOFF_SECONDS
+                    leader_gauge.set(1 if is_leader else 0)
+                    lease_gauge.set(1 if lease_active else 0)
                     try:
                         await asyncio.wait_for(stop.wait(), timeout=delay)
                     except TimeoutError:

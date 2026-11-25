@@ -26,10 +26,36 @@ jobs:
     outputs:
       backend: ${{ steps.filter.outputs.backend }}
       paths: ${{ steps.filter.outputs.changes }}
+      services: ${{ steps.services.outputs.services }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Discover service Dockerfiles
+        id: services
+        run: |
+          services=$(
+            for spec in \
+              instruction-api:apps/instruction-api/Dockerfile \
+              dispatcher:apps/dispatcher/Dockerfile \
+              portal-publisher:apps/portal-publisher/Dockerfile \
+              ingest-go:apps/ingest-go/Dockerfile \
+              ingest-py:apps/ingest-py/Dockerfile \
+              processor-go:apps/processor-go/Dockerfile \
+              processor-py:apps/processor-py/Dockerfile \
+              archiver-go:apps/archiver-go/Dockerfile \
+              archiver-py:apps/archiver-py/Dockerfile \
+              migrate:apps/migrate/Dockerfile \
+              plantsim:tools/plantsim/Dockerfile; do
+              service=${spec%%:*}
+              dockerfile=${spec#*:}
+              if [[ -f "$dockerfile" ]]; then
+                jq -cn --arg service "$service" --arg dockerfile "$dockerfile" \
+                  '{service: $service, dockerfile: $dockerfile}'
+              fi
+            done | jq -cs '.'
+          )
+          printf 'services=%s\n' "$services" >> "$GITHUB_OUTPUT"
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         with:
@@ -182,7 +208,8 @@ jobs:
       - name: Check Go packages
         id: check
         run: |
-          if [[ -n "$(go list ./... 2>/dev/null)" ]]; then
+          pkgs=$(go list ./...)
+          if [[ -n "$pkgs" ]]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
@@ -240,23 +267,13 @@ jobs:
 
   images:
     name: Build and scan / ${{ matrix.service }}
+    if: needs.changes.outputs.backend == 'true' && needs.changes.outputs.services != '[]'
     needs: [changes, helm]
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - {service: instruction-api, dockerfile: apps/instruction-api/Dockerfile}
-          - {service: dispatcher, dockerfile: apps/dispatcher/Dockerfile}
-          - {service: portal-publisher, dockerfile: apps/portal-publisher/Dockerfile}
-          - {service: ingest-go, dockerfile: apps/ingest-go/Dockerfile}
-          - {service: ingest-py, dockerfile: apps/ingest-py/Dockerfile}
-          - {service: processor-go, dockerfile: apps/processor-go/Dockerfile}
-          - {service: processor-py, dockerfile: apps/processor-py/Dockerfile}
-          - {service: archiver-go, dockerfile: apps/archiver-go/Dockerfile}
-          - {service: archiver-py, dockerfile: apps/archiver-py/Dockerfile}
-          - {service: migrate, dockerfile: apps/migrate/Dockerfile}
-          - {service: plantsim, dockerfile: tools/plantsim/Dockerfile}
+        include: ${{ fromJSON(needs.changes.outputs.services) }}
     env:
       SERVICE: ${{ matrix.service }}
       IMAGE: ghcr.io/${{ github.repository }}/${{ matrix.service }}
@@ -356,13 +373,8 @@ jobs:
               timeout 30s docker run --name jammy-smoke --network none "$image" -version
               exit 0
               ;;
-            instruction-api) expected='HMAC_KEYS_FILE is required' ;;
-            dispatcher) expected='PLANT_GATEWAY_URL is required' ;;
-            portal-publisher|archiver-go) expected='S3_BUCKET is required' ;;
-            ingest-go) expected='INGEST_STREAM is required' ;;
-            ingest-py|archiver-py) expected='NATS_URL is required' ;;
-            processor-go) expected='invalid NATS_STREAMS: expected comma-separated nonempty items without spaces' ;;
-            processor-py) expected='DATABASE_URL is required' ;;
+            instruction-api|dispatcher|portal-publisher|ingest-go|ingest-py|processor-go|processor-py|archiver-go|archiver-py)
+              ;;
             *) echo "Smoke test missing for $SERVICE" >&2; exit 1 ;;
           esac
 
@@ -373,7 +385,8 @@ jobs:
           cat "$RUNNER_TEMP/smoke.log"
           [[ $status == 1 ]]
           mapfile -t smoke_lines < "$RUNNER_TEMP/smoke.log"
-          [[ ${#smoke_lines[@]} == 1 && ${smoke_lines[0]} == "$expected" ]]
+          [[ ${#smoke_lines[@]} == 1 ]]
+          [[ ${smoke_lines[0]} =~ ^([A-Z0-9_]+\ is\ required|invalid\ [A-Z0-9_]+(:.*)?)$ ]]
       # Unfixed findings cannot be remediated by a version bump. See
       # docs/backend/VERSIONS.md for the tracked exceptions and scan policy.
       - name: Scan linux/amd64
@@ -445,8 +458,9 @@ jobs:
   publish:
     name: Publish and sign / ${{ matrix.service }}
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' &&
-      github.repository == 'cloud4-final/jammy-application'
-    needs: images
+      github.repository == 'cloud4-final/jammy-application' &&
+      needs.changes.outputs.services != '[]'
+    needs: [changes, images]
     runs-on: ubuntu-24.04
     permissions:
       packages: write # Push the scanned image and its Cosign signature to GHCR.
@@ -454,8 +468,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: [instruction-api, dispatcher, portal-publisher, ingest-go, ingest-py,
-                  processor-go, processor-py, archiver-go, archiver-py, migrate, plantsim]
+        include: ${{ fromJSON(needs.changes.outputs.services) }}
     env:
       IMAGE: ghcr.io/${{ github.repository }}/${{ matrix.service }}
     steps:

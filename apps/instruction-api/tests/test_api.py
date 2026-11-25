@@ -1,6 +1,7 @@
 import asyncio
 import json
 import re
+import socket
 import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -9,16 +10,18 @@ from uuid import uuid4
 import httpx
 import psycopg
 import pytest
+from instruction_api import main as api_main
 from instruction_api.hmac_auth import HMACAuth, sign
 from instruction_api.main import create_app, serve
 from jammy_common import db
 from jammy_common.config import CommonConfig, ConfigError
+from jammy_common.http import HeaderTimeoutProtocol
 from opentelemetry import trace
 from opentelemetry.metrics import NoOpMeter
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-from psycopg_pool import AsyncConnectionPool
+from psycopg_pool import AsyncConnectionPool, PoolTimeout
 from testcontainers.core.container import DockerContainer
 
 PATH = "/v1/instructions"
@@ -122,6 +125,40 @@ def test_post_uses_optional_lease_epoch_without_changing_signature():
                 assert (await send(client, body(), lease_epoch=value)).status_code == 202
                 assert cursor.execute.await_count == (1 if value is None else 2)
                 assert cursor.execute.await_args.args[1][-1] == (None if value is None else int(value))
+
+    asyncio.run(exercise())
+
+
+def test_repo_uses_two_second_pool_connection_timeout():
+    async def exercise():
+        timeouts = []
+
+        class FakePool:
+            def connection(self, *, timeout=None):
+                timeouts.append(timeout)
+                raise PoolTimeout("pool exhausted")
+
+        app = create_app(FakePool(), HMACAuth({"k": KEY}, 300), NoOpMeter("instruction-api"), site_id="a")
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            problem(await send(client, body()), 503, "unavailable")
+            problem(await send(client, method="GET", path=f"{PATH}/{uuid4()}"), 503, "unavailable")
+        assert timeouts == [2, 2]
+
+        async with AsyncConnectionPool(
+            "postgresql://127.0.0.1:1/test", min_size=0, max_size=1, open=False,
+        ) as pool:
+            await pool.open(wait=False)
+            real_app = create_app(
+                pool, HMACAuth({"k": KEY}, 300), NoOpMeter("instruction-api"), site_id="a",
+            )
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=real_app), base_url="http://test",
+            ) as client:
+                started = time.monotonic()
+                problem(await send(client, body()), 503, "unavailable")
+                assert 1.8 <= time.monotonic() - started < 4.0
 
     asyncio.run(exercise())
 
@@ -285,6 +322,70 @@ def test_instruction_api_uses_full_pool_in_its_single_worker(monkeypatch):
 
     asyncio.run(exercise())
     assert pool_sizes == [3]
+
+
+def test_public_server_configures_header_timeout_and_disables_lifespan(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql://127.0.0.1:1/test")
+    captured = {}
+    original_server = api_main._PublicServer
+
+    def capture_server(config):
+        captured["config"] = config
+        return original_server(config)
+
+    monkeypatch.setattr(api_main, "_PublicServer", capture_server)
+
+    async def exercise():
+        stop = asyncio.Event()
+        stop.set()
+        cfg = CommonConfig("site-a", "api", 0, 0, "info", 25, "jetstream")
+        await serve(stop, cfg, HMACAuth({"k": KEY}, 300))
+
+    asyncio.run(exercise())
+    assert captured["config"].http is HeaderTimeoutProtocol
+    assert captured["config"].lifespan == "off"
+
+
+def test_incomplete_http_headers_close_at_deadline(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql://127.0.0.1:1/test")
+
+    def free_port():
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            return listener.getsockname()[1]
+
+    http_port = free_port()
+    admin_port = free_port()
+
+    async def exercise():
+        stop = asyncio.Event()
+        cfg = CommonConfig("site-a", "api", http_port, admin_port, "info", 25, "jetstream")
+        serving = asyncio.create_task(serve(stop, cfg, HMACAuth({"k": KEY}, 300)))
+        try:
+            async with httpx.AsyncClient() as client:
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    try:
+                        if (await client.get(f"http://127.0.0.1:{admin_port}/livez")).status_code == 200:
+                            break
+                    except httpx.TransportError:
+                        await asyncio.sleep(0.05)
+                else:
+                    raise AssertionError("instruction-api never became live")
+
+            def probe():
+                with socket.create_connection(("127.0.0.1", http_port), timeout=7) as client:
+                    started = time.monotonic()
+                    client.sendall(b"POST /v1/instructions HTTP/1.1\r\nHost: localhost\r\n")
+                    assert client.recv(1) == b""
+                    assert 4.5 <= time.monotonic() - started < 6.5
+
+            await asyncio.to_thread(probe)
+        finally:
+            stop.set()
+            await serving
+
+    asyncio.run(exercise())
 
 
 def test_same_id_same_body_200(dsn):

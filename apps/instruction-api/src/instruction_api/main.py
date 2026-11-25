@@ -21,6 +21,7 @@ from jammy_common.config import (
     env,
     positive_size,
 )
+from jammy_common.http import HeaderTimeoutProtocol
 from jammy_common.instructions import Instruction
 from opentelemetry import trace
 from opentelemetry.metrics import Meter
@@ -186,7 +187,14 @@ async def serve(stop: asyncio.Event, cfg: CommonConfig, auth: HMACAuth) -> None:
 
     app = create_app(pool, auth, meter, site_id=cfg.site_id)
     public = _PublicServer(uvicorn.Config(
-        app, host="0.0.0.0", port=cfg.http_port, workers=1, log_config=None, access_log=False,
+        app,
+        host="0.0.0.0",
+        port=cfg.http_port,
+        workers=1,
+        lifespan="off",
+        http=HeaderTimeoutProtocol,
+        log_config=None,
+        access_log=False,
     ))
     admin = AdminServer(cfg.admin_port, {"postgres": lambda: db.ping(pool)})
     try:
