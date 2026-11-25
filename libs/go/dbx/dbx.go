@@ -5,7 +5,7 @@ import (
 	"errors"
 	"strconv"
 
-	"github.com/cloud4-final/jammy-5th/libs/go/config"
+	"github.com/cloud4-final/jammy-application/libs/go/config"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
