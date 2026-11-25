@@ -18,6 +18,8 @@ from jammy_common.config import (
     env_ratio,
     parse_list,
     positive_int,
+    validate_database_url,
+    validate_nats_url,
 )
 from jammy_common.logging import setup as setup_logging
 from jammy_common.write_fence import Fence, Fenced, write_connection, write_fence_age
@@ -113,10 +115,10 @@ class ProcessorConfig:
     @classmethod
     def from_env(cls):
         common = CommonConfig.from_env()
-        env("DATABASE_URL", required=True)
+        validate_database_url(env("DATABASE_URL", required=True))
         streams = ()
         if common.pipeline_mode == "jetstream":
-            env("NATS_URL", required=True)
+            validate_nats_url(env("NATS_URL", required=True))
             streams = tuple(
                 parse_list("NATS_STREAMS", env("NATS_STREAMS", required=True), unique=True)
             )
