@@ -586,6 +586,33 @@ def test_archive_config_rejects_invalid_limits(monkeypatch):
     assert ArchiveConfig.from_env().s3_prefix == "site-a/"
 
 
+def test_archive_config_validates_database_and_nats_url(monkeypatch):
+    from archiver.main import ArchiveConfig, main
+    from jammy_common.config import ConfigError
+
+    monkeypatch.setenv("SITE_ID", "test")
+    monkeypatch.setenv("S3_BUCKET", "bucket")
+    monkeypatch.setenv("PIPELINE_MODE", "jetstream")
+    monkeypatch.setenv("NATS_STREAMS", "raw-fixture")
+    monkeypatch.setenv("NATS_URL", "http://localhost:4222")
+    with pytest.raises(ConfigError, match="^invalid NATS_URL$"):
+        ArchiveConfig.from_env()
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == "invalid NATS_URL"
+
+    monkeypatch.setenv("NATS_URL", "ws://localhost:8080")
+    assert ArchiveConfig.from_env().streams == ("raw-fixture",)
+
+    monkeypatch.setenv("PIPELINE_MODE", "direct-db")
+    monkeypatch.setenv("DATABASE_URL", "://bad")
+    with pytest.raises(ConfigError, match="^invalid DATABASE_URL$"):
+        ArchiveConfig.from_env()
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == "invalid DATABASE_URL"
+
+
 def test_shutdown_retries_transient_flush_error(monkeypatch):
     from types import SimpleNamespace
     from unittest.mock import AsyncMock, Mock

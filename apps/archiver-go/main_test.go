@@ -28,6 +28,7 @@ import (
 	"github.com/cloud4-final/jammy-5th/apps/archiver-go/internal/sourcejs"
 	pb "github.com/cloud4-final/jammy-5th/libs/go/pb/jammyv1"
 	"github.com/cloud4-final/jammy-5th/libs/go/s3x"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
@@ -47,6 +48,7 @@ func TestLoadAllowsZeroShutdownTimeout(t *testing.T) {
 	t.Setenv("SITE_ID", "test")
 	t.Setenv("S3_BUCKET", "archive")
 	t.Setenv("PIPELINE_MODE", "direct-db")
+	t.Setenv("DATABASE_URL", "postgres://localhost/test")
 	t.Setenv("SHUTDOWN_TIMEOUT_SECONDS", "0")
 
 	cfg, err := load()
@@ -363,18 +365,60 @@ func TestArchiveEndToEnd(t *testing.T) {
 				t.Fatalf("incorrect recovered seal: %+v", doc)
 			}
 		})
+		t.Run("FlushSealAfterRestartWithNoPartitions", func(t *testing.T) {
+			sealKey := seal.Prefix("solar", start.Add(-time.Hour)) + "_SEALED-db.json"
+			_, err := client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &bucket, Key: &sealKey})
+			check(t, err)
+			childRows, err := pool.Query(ctx, `SELECT c.relname FROM pg_inherits i
+				JOIN pg_class c ON c.oid=i.inhrelid
+				WHERE i.inhparent='jammy.raw_events'::regclass`)
+			check(t, err)
+			var children []string
+			for childRows.Next() {
+				var name string
+				check(t, childRows.Scan(&name))
+				children = append(children, name)
+			}
+			check(t, childRows.Err())
+			childRows.Close()
+			for _, child := range children {
+				_, err := pool.Exec(ctx, "DROP TABLE "+pgx.Identifier{"jammy", child}.Sanitize())
+				check(t, err)
+			}
+			failing := exportdb.Exporter{Pool: pool, Archive: exporter.Archive, Lateness: 10 * time.Minute}
+			done, err := failing.ExportNext(ctx)
+			if done || !errors.Is(err, failSeal) {
+				t.Fatalf("expected seal retry error with no partitions, got done=%v err=%v", done, err)
+			}
+			restarted := exportdb.Exporter{Pool: pool, Archive: archive, Lateness: 10 * time.Minute}
+			done, err = restarted.ExportNext(ctx)
+			check(t, err)
+			if done {
+				t.Fatal("unexpected partition export when none remain")
+			}
+			var doc seal.Document
+			check(t, pq.ReadJSON(ctx, store, sealKey, &doc))
+			wantFile := seal.Prefix("solar", start.Add(-time.Hour)) + "db-" + partition + ".parquet"
+			if doc.Rows != 1 || len(doc.Files) != 1 || doc.Files[0] != wantFile {
+				t.Fatalf("incorrect recovered seal with no partitions: %+v", doc)
+			}
+		})
 	})
 	t.Run("TestStreamLoopsFilterAndDrain", func(t *testing.T) {
 		listener, err := net.Listen("tcp", "127.0.0.1:0")
 		check(t, err)
 		adminPort := listener.Addr().(*net.TCPAddr).Port
 		check(t, listener.Close())
+		stageDir := t.TempDir()
+		for _, leftover := range []string{"jammy-leftover.parquet", "jammy-verify-leftover.parquet"} {
+			check(t, os.WriteFile(filepath.Join(stageDir, leftover), []byte("stale"), 0600))
+		}
 		t.Setenv("SITE_ID", "test")
 		t.Setenv("PIPELINE_MODE", "jetstream")
 		t.Setenv("NATS_URL", "nats://"+natsAddress)
 		t.Setenv("NATS_STREAMS", "run-a,run-b")
 		t.Setenv("S3_BUCKET", bucket)
-		t.Setenv("STAGE_DIR", t.TempDir())
+		t.Setenv("STAGE_DIR", stageDir)
 		t.Setenv("ADMIN_PORT", strconv.Itoa(adminPort))
 		t.Setenv("ARCHIVE_FLUSH_SECONDS", "60")
 		cfg, err := load()
@@ -409,6 +453,11 @@ func TestArchiveEndToEnd(t *testing.T) {
 			}
 			return nil
 		})
+		for _, leftover := range []string{"jammy-leftover.parquet", "jammy-verify-leftover.parquet"} {
+			if _, err := os.Stat(filepath.Join(stageDir, leftover)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("leftover %s not removed on startup (err=%v)", leftover, err)
+			}
+		}
 		want := make(map[string]bool)
 		for _, stream := range cfg.streams {
 			makeMessage := func(subject, id string) *nats.Msg {
@@ -593,6 +642,7 @@ func TestArchiveCrashHelper(t *testing.T) {
 func TestArchiveSettings(t *testing.T) {
 	t.Setenv("SITE_ID", "test")
 	t.Setenv("PIPELINE_MODE", "jetstream")
+	t.Setenv("NATS_URL", "nats://localhost:4222")
 	t.Setenv("NATS_STREAMS", "raw-a,raw-b")
 	t.Setenv("S3_BUCKET", "archive")
 	t.Setenv("S3_PREFIX", "/site-a/")
@@ -625,6 +675,7 @@ func TestArchiveSettings(t *testing.T) {
 func TestArchiveAckWaitDefaultOverflow(t *testing.T) {
 	t.Setenv("SITE_ID", "test")
 	t.Setenv("PIPELINE_MODE", "direct-db")
+	t.Setenv("DATABASE_URL", "postgres://localhost/test")
 	t.Setenv("S3_BUCKET", "archive")
 	t.Setenv("ARCHIVE_FLUSH_SECONDS", "4000000000")
 	for _, name := range []string{"ACK_WAIT_SECONDS", "ACK_WAIT_SECONDS_FILE"} {
@@ -687,4 +738,100 @@ func TestIsReadyTimesOutOnStalledS3(t *testing.T) {
 	if elapsed := time.Since(started); elapsed >= 1500*time.Millisecond {
 		t.Fatalf("s3Ready took %s, want < 1.5s", elapsed)
 	}
+}
+
+func TestPrepareStageRemovesLeftoverStagingFiles(t *testing.T) {
+	stage := filepath.Join(t.TempDir(), "nested")
+	check(t, os.MkdirAll(stage, 0755))
+	for _, name := range []string{"jammy-123.parquet", "jammy-verify-456.parquet", "keep.parquet", "jammy-123.tmp"} {
+		check(t, os.WriteFile(filepath.Join(stage, name), []byte("data"), 0600))
+	}
+	check(t, os.Mkdir(filepath.Join(stage, "jammy-dir.parquet"), 0755))
+
+	check(t, prepareStage(stage))
+
+	for _, removed := range []string{"jammy-123.parquet", "jammy-verify-456.parquet"} {
+		if _, err := os.Stat(filepath.Join(stage, removed)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("%s still exists (err=%v)", removed, err)
+		}
+	}
+	for _, kept := range []string{"keep.parquet", "jammy-123.tmp", "jammy-dir.parquet"} {
+		if _, err := os.Stat(filepath.Join(stage, kept)); err != nil {
+			t.Fatalf("%s was unexpectedly removed: %v", kept, err)
+		}
+	}
+}
+
+func TestLoadValidatesBackendEnv(t *testing.T) {
+	assertErr := func(t *testing.T, err error, want string) {
+		t.Helper()
+		if err == nil || err.Error() != want || strings.Contains(err.Error(), "\n") {
+			t.Fatalf("got err=%v, want single-line %q", err, want)
+		}
+	}
+
+	t.Run("jetstream", func(t *testing.T) {
+		t.Setenv("SITE_ID", "test")
+		t.Setenv("PIPELINE_MODE", "jetstream")
+		t.Setenv("NATS_STREAMS", "raw-a1")
+		t.Setenv("S3_BUCKET", "archive")
+
+		t.Setenv("NATS_URL", "")
+		_, err := load()
+		assertErr(t, err, "NATS_URL is required")
+
+		for _, bad := range []string{"://bad", "nats://", "   ", "nats://localhost:4222,"} {
+			t.Setenv("NATS_URL", bad)
+			_, err := load()
+			assertErr(t, err, "invalid NATS_URL")
+		}
+
+		natsFile := filepath.Join(t.TempDir(), "nats_url")
+		check(t, os.WriteFile(natsFile, []byte("nats://localhost:4222\n"), 0600))
+		t.Setenv("NATS_URL_FILE", natsFile)
+		if _, err := load(); err != nil {
+			t.Fatalf("valid jetstream config via NATS_URL_FILE failed: %v", err)
+		}
+	})
+
+	t.Run("direct-db", func(t *testing.T) {
+		t.Setenv("SITE_ID", "test")
+		t.Setenv("PIPELINE_MODE", "direct-db")
+		t.Setenv("S3_BUCKET", "archive")
+
+		t.Setenv("DATABASE_URL", "")
+		_, err := load()
+		assertErr(t, err, "DATABASE_URL is required")
+
+		t.Setenv("DATABASE_URL", "://bad")
+		_, err = load()
+		assertErr(t, err, "invalid DATABASE_URL")
+
+		dbFile := filepath.Join(t.TempDir(), "db_url")
+		check(t, os.WriteFile(dbFile, []byte("postgres://localhost/test\n"), 0600))
+		t.Setenv("DATABASE_URL_FILE", dbFile)
+		if _, err := load(); err != nil {
+			t.Fatalf("valid direct-db config via DATABASE_URL_FILE failed: %v", err)
+		}
+
+		t.Setenv("DB_POOL_MIN", "-1")
+		_, err = load()
+		assertErr(t, err, "invalid DB_POOL_MIN")
+
+		t.Setenv("DB_POOL_MIN", "0")
+		t.Setenv("DB_POOL_MAX", "0")
+		_, err = load()
+		assertErr(t, err, "DB_POOL_MAX must be positive and at least DB_POOL_MIN")
+
+		t.Setenv("DB_POOL_MIN", "4")
+		t.Setenv("DB_POOL_MAX", "2")
+		_, err = load()
+		assertErr(t, err, "DB_POOL_MAX must be positive and at least DB_POOL_MIN")
+
+		t.Setenv("DB_POOL_MIN", "0")
+		t.Setenv("DB_POOL_MAX", "1")
+		if _, err := load(); err != nil {
+			t.Fatalf("valid pool bounds failed: %v", err)
+		}
+	})
 }

@@ -25,6 +25,8 @@ from jammy_common.config import (
     parse_list,
     parse_size,
     positive_int,
+    validate_database_url,
+    validate_nats_url,
 )
 from jammy_common.logging import setup as setup_logging
 from nats.errors import Error as NatsError
@@ -65,12 +67,12 @@ class ArchiveConfig:
         common = CommonConfig.from_env()
         streams = ()
         if common.pipeline_mode == "jetstream":
-            env("NATS_URL", required=True)
+            validate_nats_url(env("NATS_URL", required=True))
             streams = tuple(
                 parse_list("NATS_STREAMS", env("NATS_STREAMS", required=True), unique=True)
             )
         else:
-            env("DATABASE_URL", required=True)
+            validate_database_url(env("DATABASE_URL", required=True))
             db.worker_pool_limits(1, 0)
         seconds = env_duration("SEAL_LATENESS", "10m")
         flush_bytes = parse_size("ARCHIVE_FLUSH_BYTES", env("ARCHIVE_FLUSH_BYTES", "64MiB"))
