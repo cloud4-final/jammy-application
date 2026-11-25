@@ -1,0 +1,42 @@
+prometheus.remote_write "victoriametrics" {
+	external_labels = {
+		run_id  = sys.env("RUN_ID"),
+		arm     = sys.env("ARM"),
+		profile = sys.env("PROFILE"),
+	}
+
+	endpoint {
+		url = coalesce(sys.env("VICTORIAMETRICS_WRITE_URL"), "http://victoriametrics:8428/api/v1/write")
+	}
+}
+
+otelcol.receiver.otlp "jammy" {
+	grpc {
+		endpoint = "0.0.0.0:4317"
+	}
+
+	http {
+		endpoint = "0.0.0.0:4318"
+	}
+
+	output {
+		traces = [otelcol.exporter.otlp.tempo.input]
+		logs   = [otelcol.exporter.otlphttp.loki.input]
+	}
+}
+
+otelcol.exporter.otlp "tempo" {
+	client {
+		endpoint = coalesce(sys.env("TEMPO_OTLP_ENDPOINT"), "tempo:4317")
+
+		tls {
+			insecure = true
+		}
+	}
+}
+
+otelcol.exporter.otlphttp "loki" {
+	client {
+		endpoint = coalesce(sys.env("LOKI_OTLP_ENDPOINT"), "http://loki:3100/otlp")
+	}
+}
