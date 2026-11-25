@@ -1,0 +1,20 @@
+{{- if .Values.ingest.enabled }}
+  {{- $names := dict }}
+  {{- $streams := dict }}
+  {{- range .Values.ingest.instances }}
+    {{- if hasKey $names .name }}
+      {{- fail (printf "duplicate ingest instance name: %s" .name) }}
+    {{- end }}
+    {{- $_ := set $names .name true }}
+    {{- if eq $.Values.global.pipelineMode "jetstream" }}
+      {{- $stream := required "each ingest instance needs a stream in jetstream mode" .stream }}
+      {{- if hasKey $streams $stream }}
+        {{- fail (printf "duplicate ingest stream: %s" $stream) }}
+      {{- end }}
+      {{- $_ := set $streams $stream true }}
+    {{- end }}
+    {{- $selector := mergeOverwrite (deepCopy $.Values.ingest.nodeSelector) (default dict .nodeSelector) }}
+---
+{{ include "jammy.workload" (dict "root" $ "service" "ingest" "component" (printf "ingest-%s" .name) "app" $.Values.ingest "stream" .stream "nodeSelector" $selector) }}
+  {{- end }}
+{{- end }}

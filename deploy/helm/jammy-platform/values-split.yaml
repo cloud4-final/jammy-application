@@ -1,0 +1,38 @@
+global:
+  siteId: jammy-a
+  pipelineMode: jetstream
+
+instruction-api:
+  nodeSelector: {role: control}
+  tolerations:
+    - {key: role, operator: Equal, value: control, effect: NoSchedule}
+dispatcher:
+  replicas: 2
+  nodeSelector: {role: control}
+  tolerations:
+    - {key: role, operator: Equal, value: control, effect: NoSchedule}
+ingest:
+  nodeSelector: {role: ingest}
+  env:
+    WEB_CONCURRENCY: "2"
+  instances:
+    - name: a1
+      stream: raw-a1
+      nodeSelector: {jammy.io/ingest-instance: a1}
+      service: {type: ClusterIP}
+    - name: a2
+      stream: raw-a2
+      nodeSelector: {jammy.io/ingest-instance: a2}
+      service: {type: ClusterIP}
+processor:
+  nodeSelector: {role: ingest}
+archiver:
+  nodeSelector: {role: ingest}
+portal-publisher:
+  nodeSelector: {role: ingest}
+plantsim:
+  nodeSelector: {role: ingest}
+migrate:
+  nodeSelector: {role: control}
+  tolerations:
+    - {key: role, operator: Equal, value: control, effect: NoSchedule}
