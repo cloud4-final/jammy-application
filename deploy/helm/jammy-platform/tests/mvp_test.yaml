@@ -1,0 +1,28 @@
+suite: mvp data path
+templates:
+  - deployment-app.yaml
+  - deployment-ingest.yaml
+values:
+  - ../values-mvp.yaml
+  - site-values.yaml
+tests:
+  - it: mvp_sets_direct_db
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: {name: PIPELINE_MODE, value: direct-db}
+        template: deployment-ingest.yaml
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: {name: PIPELINE_MODE, value: direct-db}
+        template: deployment-app.yaml
+        documentSelector:
+          path: metadata.labels["app.kubernetes.io/component"]
+          value: processor
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: {name: PIPELINE_MODE, value: direct-db}
+        template: deployment-app.yaml
+        documentSelector:
+          path: metadata.labels["app.kubernetes.io/component"]
+          value: archiver
