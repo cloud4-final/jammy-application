@@ -33,7 +33,7 @@ LABEL org.opencontainers.image.title="dispatcher" \
       org.opencontainers.image.revision="${IMAGE_REVISION}"
 # Apply Debian security fixes for the affected runtime packages.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends --only-upgrade zlib1g \
+    && apt-get install -y --no-install-recommends --only-upgrade zlib1g libzstd1 \
     && rm -rf /var/lib/apt/lists/* \
         /usr/local/bin/pip /usr/local/bin/pip3 /usr/local/bin/pip3.14 \
         /usr/local/lib/python3.14/ensurepip \
