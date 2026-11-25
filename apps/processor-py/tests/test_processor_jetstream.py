@@ -225,22 +225,34 @@ def test_claims_sorted_but_results_keep_delivery_order():
     from unittest.mock import AsyncMock
 
     from processor.source_jetstream import JetStreamSource
+    from processor.state import LatestState
 
     claims = []
 
     class Connection:
         async def execute(self, _query, args):
             claims.append(args[1])
-            return SimpleNamespace(fetchone=AsyncMock(return_value=None))
+            row = None if args[1] == "batch-m" else (1,)
+            return SimpleNamespace(fetchone=AsyncMock(return_value=row))
+
+        def cursor(self):
+            return AsyncMock()
 
     @asynccontextmanager
     async def connect(**_kwargs):
         yield Connection()
 
-    def message(batch_id):
+    def message(batch_id, value):
         return SimpleNamespace(
             data=EventBatch(
-                batch_id=batch_id, events=[Event(profile="synth-small")]
+                batch_id=batch_id,
+                events=[
+                    Event(
+                        profile="synth-small",
+                        routing_key="asset",
+                        payload=SynthSmall(value=value).SerializeToString(),
+                    )
+                ],
             ).SerializeToString(),
             headers={
                 "Content-Type": "application/x-protobuf",
@@ -260,11 +272,51 @@ def test_claims_sorted_but_results_keep_delivery_order():
         batch_size=64,
         detector=detector,
     )
-    _, results, _ = asyncio.run(
-        source.commit([message("batch-z"), message("batch-a")], lambda: None)
+    readings, results, _ = asyncio.run(
+        source.commit(
+            [message("batch-z", 3), message("batch-m", 2), message("batch-a", 1)],
+            lambda: None,
+        )
     )
-    assert claims == ["batch-a", "batch-z"]
-    assert results == ["duplicate", "duplicate"]
+    assert claims == ["batch-a", "batch-m", "batch-z"]
+    assert results == ["ok", "duplicate", "ok"]
+
+    state = LatestState()
+    state.offer(readings)
+    assert state.pending["asset"].value == 1
+
+
+def test_empty_fetch_clears_lag_with_unacknowledged_deliveries(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+
+    from processor.main import Processor
+
+    async def run():
+        stop = asyncio.Event()
+        monkeypatch.setattr("processor.main.asyncio.sleep", AsyncMock())
+
+        async def pending():
+            stop.set()
+            return 1
+
+        meter = Mock()
+        meter.create_gauge.side_effect = [Mock(), Mock()]
+        consumer = Processor(SimpleNamespace(drop_ratio=0.5), None, meter)
+        consumer.database_ready.set()
+        consumer.client = SimpleNamespace(is_connected=True)
+        consumer.observe_stream("raw", 1, 30)
+        source = SimpleNamespace(
+            stream="raw",
+            prepare=AsyncMock(),
+            fetch=AsyncMock(return_value=[]),
+            pending=pending,
+        )
+        await consumer.consume(stop, source)
+        consumer.lag.set.assert_called_with(0)
+        consumer.pending.set.assert_called_with(1)
+
+    asyncio.run(run())
 
 
 def test_transaction_error_counts_messages_and_ack_follows_success(monkeypatch):
@@ -427,6 +479,12 @@ def test_processor_config_rejects_invalid_limits(monkeypatch):
         ("STATE_FLUSH_SECONDS", "0"),
         ("ANOMALY_DROP_RATIO", "0"),
         ("ANOMALY_DROP_RATIO", "1.1"),
+        ("GATE_MAX_PAST", "100000000000000h"),
+        ("ACK_WAIT_SECONDS", "9223372037"),
+        ("STATE_FLUSH_SECONDS", "9223372037"),
+        ("MAX_ACK_PENDING", "2147483648"),
+        ("PROCESSOR_MAX_DELIVER", "2147483648"),
+        ("FETCH_BATCH", "2147483648"),
     ):
         with monkeypatch.context() as patch:
             patch.setenv(key, value)

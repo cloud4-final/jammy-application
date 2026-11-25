@@ -97,8 +97,8 @@ run_arm() (
         --from-literal=AWS_ACCESS_KEY_ID=jammy \
         --from-literal=AWS_SECRET_ACCESS_KEY=jammy
     helm install jammy-platform "$chart" --kubeconfig "$kubeconfig" --namespace jammy \
-        -f "$chart/values-$arm.yaml" --wait=watcher --timeout 5m \
-        --set-string "global.image.tag=$tag" --set 'global.imagePullSecrets={}' \
+        -f "$chart/values-$arm.yaml" -f deploy/helm/smoke-values.yaml --wait=watcher --timeout 5m \
+        --set-string "global.image.tag=$tag" \
         --set-string global.existingSecret=jammy-smoke \
         --set-string global.s3.bucket=jammy-local \
         --set-string "global.s3.endpoint=http://$(container_ip seaweedfs):8333" \

@@ -30,9 +30,9 @@ from jammy_common.config import (
     ConfigError,
     config_error_exit,
     env,
-    env_duration,
+    parse_duration,
+    parse_size,
     positive_int,
-    positive_size,
     validate_database_url,
     validate_nats_url,
 )
@@ -50,6 +50,27 @@ from starlette.requests import ClientDisconnect
 LOGGER = logging.getLogger(__name__)
 ROUTE = "/v1/batches"
 STORE_ERRORS = (NatsError, psycopg.Error, TimeoutError, Fenced)
+_MAX_INT64 = 2**63 - 1
+_MAX_INT32 = 2**31 - 1
+_MAX_DURATION_SECONDS = _MAX_INT64 // 10**9
+
+
+def _positive_int64_size(name: str, default: str) -> int:
+    size = parse_size(name, env(name, default), signed_64_bit=True)
+    if size <= 0:
+        raise ConfigError(f"{name} must be positive")
+    return size
+
+
+def _bounded_duration(name: str, default: str, *, positive: bool = False) -> int:
+    value = env(name, default)
+    try:
+        seconds = parse_duration(name, value)
+    except ValueError:
+        raise ConfigError(f"invalid {name}") from None
+    if seconds > _MAX_DURATION_SECONDS or (positive and seconds == 0):
+        raise ConfigError(f"invalid {name}")
+    return seconds
 
 
 @dataclass(frozen=True)
@@ -75,30 +96,29 @@ class IngestConfig:
         if common.pipeline_mode == "jetstream":
             validate_nats_url(env("NATS_URL", required=True))
             stream = env("INGEST_STREAM", required=True)
+            if any(char in stream for char in ">*. /\\\t\r\n"):
+                raise ConfigError("invalid INGEST_STREAM")
         else:
             validate_database_url(env("DATABASE_URL", required=True))
             db.worker_pool_limits(workers, 0)
-        quarantine_age = env_duration("QUARANTINE_MAX_AGE", "168h")
-        if quarantine_age <= 0 or quarantine_age > (2**63 - 1) // 10**9:
-            raise ConfigError("QUARANTINE_MAX_AGE must be a positive duration")
-        quarantine_bytes = positive_size("QUARANTINE_MAX_BYTES", "1GiB")
-        if quarantine_bytes > 2**63 - 1:
-            raise ConfigError("QUARANTINE_MAX_BYTES exceeds the JetStream limit")
+        max_inflight = positive_int("INGEST_MAX_INFLIGHT", 64)
+        if max_inflight > _MAX_INT32:
+            raise ConfigError("INGEST_MAX_INFLIGHT exceeds 31-bit limit")
         return cls(
             common,
             workers,
-            positive_size("INGEST_MAX_BODY_BYTES", "16MiB"),
-            positive_size("INGEST_MAX_DECOMPRESSED_BYTES", "64MiB"),
-            positive_int("INGEST_MAX_INFLIGHT", 64),
+            _positive_int64_size("INGEST_MAX_BODY_BYTES", "16MiB"),
+            _positive_int64_size("INGEST_MAX_DECOMPRESSED_BYTES", "64MiB"),
+            max_inflight,
             GateConfig(
-                timedelta(seconds=env_duration("GATE_MAX_PAST", "24h")),
-                timedelta(seconds=env_duration("GATE_MAX_FUTURE", "5m")),
+                timedelta(seconds=_bounded_duration("GATE_MAX_PAST", "24h")),
+                timedelta(seconds=_bounded_duration("GATE_MAX_FUTURE", "5m")),
             ),
             stream,
-            env_duration("JS_MAX_AGE", "45m"),
-            positive_size("JS_MAX_BYTES", "60GiB"),
-            quarantine_age,
-            quarantine_bytes,
+            _bounded_duration("JS_MAX_AGE", "45m"),
+            _positive_int64_size("JS_MAX_BYTES", "60GiB"),
+            _bounded_duration("QUARANTINE_MAX_AGE", "168h", positive=True),
+            _positive_int64_size("QUARANTINE_MAX_BYTES", "1GiB"),
             write_fence_age() if common.pipeline_mode == "direct-db" else None,
         )
 

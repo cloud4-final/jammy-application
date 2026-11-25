@@ -1,5 +1,6 @@
 {{- with .Values.migrate }}
 {{- if .enabled }}
+{{- include "jammy.validateSecretEnv" (dict "service" "migrate" "env" .env) }}
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -24,7 +25,7 @@ spec:
           resources:
             {{- toYaml .resources | nindent 12 }}
           env:
-            {{- range $key, $value := omit .env "DATABASE_URL" }}
+            {{- range $key, $value := .env }}
             - name: {{ $key }}
               value: {{ $value | toString | quote }}
             {{- end }}

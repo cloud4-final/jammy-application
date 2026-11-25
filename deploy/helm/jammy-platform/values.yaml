@@ -17,6 +17,7 @@ global:
     region: ap-northeast-2
     forcePathStyle: false
   otlpEndpoint: ""
+  monitoringNamespace: monitoring
   environment: production
 
 instruction-api:

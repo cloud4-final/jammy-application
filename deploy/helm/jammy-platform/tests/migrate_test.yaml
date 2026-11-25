@@ -5,6 +5,18 @@ values:
   - ../values-mvp.yaml
   - site-values.yaml
 tests:
+  - it: local smoke uses imported images without an image pull secret
+    values:
+      - ../../smoke-values.yaml
+    asserts:
+      - notExists:
+          path: spec.template.spec.imagePullSecrets
+  - it: rejects a database URL directly in values
+    set:
+      migrate.env.DATABASE_URL: postgres://fixture
+    asserts:
+      - failedTemplate:
+          errorMessage: migrate.env.DATABASE_URL must be supplied through a Secret
   - it: invokes the migration launcher with the secret and CLI args
     asserts:
       - equal:

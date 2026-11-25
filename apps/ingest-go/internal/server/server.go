@@ -163,6 +163,8 @@ func (i *Intake) submit(w http.ResponseWriter, r *http.Request) {
 		))
 	}()
 	if i.draining.Load() || !i.ready.Load() {
+		// Prevent net/http from draining an unread body before sending the response.
+		w.Header().Set("Connection", "close")
 		status = unavailable(w)
 		return
 	}
@@ -174,6 +176,7 @@ func (i *Intake) submit(w http.ResponseWriter, r *http.Request) {
 			<-i.slots
 		}()
 	default:
+		w.Header().Set("Connection", "close")
 		status = problem(w, http.StatusTooManyRequests, "too_many_requests", "Too Many Requests", "Ingest is busy", "1")
 		return
 	}
@@ -203,9 +206,6 @@ func (i *Intake) accept(ctx context.Context, w http.ResponseWriter, r *http.Requ
 	}
 	i.bytes.Add(ctx, int64(len(decoded)), metric.WithAttributes(attribute.String("kind", "decompressed")))
 	result := gate.Validate(batch, received, i.config.Gate)
-	if !i.ready.Load() {
-		return unavailable(w)
-	}
 
 	start := time.Now()
 	duplicate, err := i.sink.Store(ctx, Batch{

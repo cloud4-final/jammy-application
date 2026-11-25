@@ -1,0 +1,23 @@
+suite: workload shutdown configuration
+templates:
+  - deployment-ingest.yaml
+values:
+  - ../values-split.yaml
+  - site-values.yaml
+tests:
+  - it: rejects a shutdown deadline equal to the pod grace period
+    set:
+      ingest.env.SHUTDOWN_TIMEOUT_SECONDS: "30"
+    asserts:
+      - failedTemplate:
+          errorMessage: ingest.env.SHUTDOWN_TIMEOUT_SECONDS must be an integer from 0 to 29
+  - it: allows a shutdown deadline inside the pod grace period
+    set:
+      ingest.env.SHUTDOWN_TIMEOUT_SECONDS: "29"
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: {name: SHUTDOWN_TIMEOUT_SECONDS, value: "29"}
+      - equal:
+          path: spec.template.spec.terminationGracePeriodSeconds
+          value: 30

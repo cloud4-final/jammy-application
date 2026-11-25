@@ -64,6 +64,14 @@ tolerations:
       {{- end }}
 {{- end -}}
 
+{{- define "jammy.validateSecretEnv" -}}
+{{- range $key := list "DATABASE_URL" "HMAC_KEYS" "NATS_CREDS" "AWS_ACCESS_KEY_ID" "AWS_SECRET_ACCESS_KEY" }}
+  {{- if hasKey $.env $key }}
+    {{- fail (printf "%s.env.%s must be supplied through a Secret" $.service $key) }}
+  {{- end }}
+{{- end }}
+{{- end -}}
+
 {{- define "jammy.httpPort" -}}8080{{- end -}}
 {{- define "jammy.adminPort" -}}9090{{- end -}}
 
@@ -101,6 +109,10 @@ tolerations:
 {{- $httpPort := include "jammy.httpPort" . -}}
 {{- $adminPort := include "jammy.adminPort" . -}}
 {{- $env := deepCopy $app.env -}}
+{{- include "jammy.validateSecretEnv" (dict "service" $svc "env" $env) -}}
+{{- if and (hasKey $env "SHUTDOWN_TIMEOUT_SECONDS") (not (regexMatch "^0*([0-9]|[12][0-9])$" (toString $env.SHUTDOWN_TIMEOUT_SECONDS))) -}}
+  {{- fail (printf "%s.env.SHUTDOWN_TIMEOUT_SECONDS must be an integer from 0 to 29" $svc) -}}
+{{- end -}}
 {{- $_ := set $env "ADMIN_PORT" $adminPort -}}
 {{- $_ := set $env "OTEL_RESOURCE_ATTRIBUTES" (printf "service.version=%s,deployment.environment=%s" $global.image.tag $global.environment) -}}
 {{- if $http }}
@@ -160,14 +172,7 @@ tolerations:
   {{- $stageDir = default "/stage" $app.env.STAGE_DIR }}
   {{- $_ := set $env "STAGE_DIR" $stageDir }}
 {{- end }}
-{{- if $database }}
-  {{- $_ := unset $env "DATABASE_URL" }}
-{{- end }}
 {{- $lease := and (eq $svc "dispatcher") (eq (toString $app.env.LEASE_MODE) "dynamodb") -}}
-{{- if or $s3 $lease (and (eq $svc "dispatcher") $app.env.SQS_QUEUE_URL) }}
-  {{- $_ := unset $env "AWS_ACCESS_KEY_ID" }}
-  {{- $_ := unset $env "AWS_SECRET_ACCESS_KEY" }}
-{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

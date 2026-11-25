@@ -3,17 +3,30 @@
 import asyncio
 import logging
 import os
+from urllib.parse import urlsplit
 
 from nats.aio.client import Client
 
-from .config import CommonConfig, env
+from .config import CommonConfig, env, validate_nats_url
 
 logger = logging.getLogger(__name__)
 
 
+def _server_urls(value: str) -> list[str]:
+    urls: list[str] = []
+    for raw_part in value.split(","):
+        part = raw_part.strip()
+        parsed = urlsplit(part)
+        if parsed.scheme.lower() in {"nats", "tls"} and parsed.port is None:
+            netloc = parsed.netloc.removesuffix(":")
+            part = parsed._replace(netloc=f"{netloc}:4222").geturl()
+        urls.append(part)
+    return urls
+
+
 async def connect(cfg: CommonConfig) -> Client:
     """Await a connection. Start this as a task alongside the admin server."""
-    servers = env("NATS_URL", required=True)
+    servers = _server_urls(validate_nats_url(env("NATS_URL", required=True)))
     credentials = os.environ.get("NATS_CREDS_FILE") or None
     client = Client()
 

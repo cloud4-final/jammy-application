@@ -2,7 +2,7 @@ import sys
 from unittest.mock import AsyncMock
 
 import pytest
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, EndpointConnectionError
 from dispatcher import cli
 from dispatcher.lease import Lease
 from jammy_common.config import ConfigError
@@ -70,3 +70,17 @@ def test_cli_lease_takeover_config_and_value_errors(monkeypatch, capsys, error):
 
     assert exc.value.code == 1
     assert capsys.readouterr().err.strip() == str(error)
+
+
+def test_cli_lease_takeover_endpoint_error(monkeypatch, capsys):
+    takeover = AsyncMock(
+        side_effect=EndpointConnectionError(endpoint_url="http://127.0.0.1:1")
+    )
+    lease = type("FakeLease", (), {"takeover": takeover})()
+    monkeypatch.setattr(Lease, "from_env", classmethod(lambda cls: lease))
+
+    with pytest.raises(SystemExit) as exc:
+        _run_cli(monkeypatch, ["lease", "takeover", "--confirm"])
+
+    assert exc.value.code == 1
+    assert capsys.readouterr().err == "Lease takeover failed (EndpointConnectionError).\n"

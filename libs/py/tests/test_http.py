@@ -1,6 +1,7 @@
 import asyncio
 import socket
 import time
+from http.client import HTTPResponse
 
 import uvicorn
 from fastapi import FastAPI
@@ -55,8 +56,10 @@ def test_header_timeout_protocol_closes_stalled_headers_initial_and_keepalive():
             def probe_keepalive_stall():
                 with socket.create_connection(("127.0.0.1", port), timeout=2) as client:
                     client.sendall(b"GET /ping HTTP/1.1\r\nHost: localhost\r\n\r\n")
-                    response = client.recv(4096)
-                    assert b"200 OK" in response
+                    with HTTPResponse(client) as response:
+                        response.begin()
+                        assert response.status == 200
+                        assert response.read() == b'{"ok":true}'
                     started = time.monotonic()
                     client.sendall(b"GET /ping HTTP/1.1\r\n")
                     assert client.recv(1) == b""

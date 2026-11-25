@@ -10,6 +10,7 @@ from dispatcher.commands import Dispatcher
 from dispatcher.leader import Leader
 from dispatcher.lease import Lease
 from jammy_common.config import ConfigError
+from psycopg import OperationalError
 from psycopg_pool import AsyncConnectionPool
 
 postgres = test_dispatch.postgres
@@ -25,6 +26,61 @@ def test_fence_interval_must_be_shorter_than_ttl(monkeypatch):
         monkeypatch.setenv(name, value)
     with pytest.raises(ConfigError, match="LEASE_FENCE_SECONDS"):
         Lease.from_env()
+
+
+@pytest.mark.parametrize("failed_publish", [0, OperationalError("database unavailable")])
+@pytest.mark.parametrize("retry_after", [1, 11])
+def test_unpublished_renewal_retries_only_while_fresh(failed_publish, retry_after):
+    async def exercise():
+        now = 100
+        table = SimpleNamespace(
+            get_item=lambda **kwargs: {"Item": {
+                "holder": "site-a", "epoch": 4, "expires_at": float("inf"),
+            }},
+            update_item=lambda **kwargs: None,
+        )
+        lease = Lease(table, holder="site-a", auto_acquire=True, clock=lambda: now)
+        leader = SimpleNamespace(
+            generation=1,
+            is_held=AsyncMock(return_value=True),
+            release=AsyncMock(),
+            execute=AsyncMock(side_effect=[
+                failed_publish if isinstance(failed_publish, Exception)
+                else SimpleNamespace(rowcount=failed_publish),
+                SimpleNamespace(rowcount=1),
+            ]),
+        )
+
+        @asynccontextmanager
+        async def transaction():
+            yield leader
+
+        leader.transaction = transaction
+        dispatcher = Dispatcher(None, "", leader, lease, site_id="site-a", clock=lambda: now)
+        if isinstance(failed_publish, Exception):
+            with pytest.raises(OperationalError):
+                await dispatcher.renew_lease()
+        else:
+            await dispatcher.renew_lease()
+        renewal = lease.renewal
+        assert not (await dispatcher.active_lease()).active
+        await dispatcher.fence_if_stale()
+        leader.release.assert_not_awaited()
+
+        now += retry_after
+        if retry_after < lease.fence_seconds:
+            await dispatcher.renew_lease()
+            assert lease.renewal is renewal
+            assert (await dispatcher.active_lease()).active
+            assert leader.execute.await_args.args[1] == ("site-a", True, 4, False, 1)
+        else:
+            await dispatcher.fence_if_stale()
+            assert not (await dispatcher.active_lease()).active
+            assert leader.execute.await_args.args[1] == ("site-a", False, 4, True, 11)
+            leader.release.assert_awaited_once_with(generation=1)
+        assert leader.execute.await_count == 2
+
+    asyncio.run(exercise())
 
 
 def test_leader_fences_during_stalled_renewal_and_recovers():

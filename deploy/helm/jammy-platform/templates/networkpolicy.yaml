@@ -13,8 +13,10 @@ spec:
     # Ingest and instruction callers can be outside the cluster.
     - ports:
         - {port: http, protocol: TCP}
-    # Alloy can scrape from a separate namespace.
+    # Alloy reaches the admin endpoint from the configured monitoring namespace.
     - from:
-        - namespaceSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.global.monitoringNamespace | quote }}
       ports:
         - {port: admin, protocol: TCP}

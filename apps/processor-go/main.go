@@ -13,6 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/cloud4-final/jammy-5th/apps/processor-go/internal/sourcedb"
 	"github.com/cloud4-final/jammy-5th/apps/processor-go/internal/sourcejs"
@@ -147,18 +148,29 @@ func load() (settings, error) {
 }
 
 func validateNATSURL(raw string) error {
+	errInvalid := errors.New("invalid NATS_URL")
+	var websocket, tcp bool
 	for part := range strings.SplitSeq(raw, ",") {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			return errors.New("invalid NATS_URL")
+		parsed, err := url.Parse(strings.TrimSpace(part))
+		if err != nil || parsed.Hostname() == "" || strings.ContainsFunc(parsed.Hostname(), unicode.IsSpace) {
+			return errInvalid
 		}
-		if !strings.Contains(part, "://") {
-			part = "nats://" + part
+		if port := parsed.Port(); port != "" {
+			if _, err := strconv.ParseUint(port, 10, 16); err != nil {
+				return errInvalid
+			}
 		}
-		parsed, err := url.Parse(part)
-		if err != nil || parsed.Host == "" {
-			return errors.New("invalid NATS_URL")
+		switch parsed.Scheme {
+		case "nats", "tls":
+			tcp = true
+		case "ws", "wss":
+			websocket = true
+		default:
+			return errInvalid
 		}
+	}
+	if tcp && websocket {
+		return errInvalid
 	}
 	return nil
 }
@@ -279,14 +291,10 @@ func (cfg settings) run(ctx context.Context) error {
 	})
 	workers.Go(func() {
 		for ctx.Err() == nil {
-			check, cancel := context.WithTimeout(ctx, time.Second)
-			err := store.RefreshAssets(check)
-			cancel()
-			if err != nil {
+			if err := refreshAssetCache(ctx, &assetsReady, store.RefreshAssets); err != nil {
 				pause(ctx, retryDelay)
 				continue
 			}
-			assetsReady.Store(true)
 			pause(ctx, assetRefreshInterval)
 		}
 	})
@@ -536,6 +544,14 @@ func updateSourceObservation(source *observation, pending int64) {
 	if pending == 0 {
 		source.lag.Store(0)
 	}
+}
+
+func refreshAssetCache(ctx context.Context, ready *atomic.Bool, refresh func(context.Context) error) error {
+	check, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	err := refresh(check)
+	ready.Store(err == nil)
+	return err
 }
 
 func checkDependencies(

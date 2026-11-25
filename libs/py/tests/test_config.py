@@ -11,6 +11,7 @@ from jammy_common.config import (
     parse_duration,
     parse_list,
     parse_size,
+    positive_size,
     validate_database_url,
     validate_nats_url,
 )
@@ -234,3 +235,32 @@ def test_validate_nats_url_accepts_valid_url(url):
 def test_validate_nats_url_rejects_invalid_url(url):
     with pytest.raises(ConfigError, match="^invalid NATS_URL$"):
         validate_nats_url(url)
+
+
+def test_positive_size_enforces_signed_64_bit_limit(monkeypatch):
+    monkeypatch.setenv("JS_MAX_BYTES", "60GiB")
+    assert positive_size("JS_MAX_BYTES", "60GiB") == 60 * 1024**3
+
+    monkeypatch.setenv("JS_MAX_BYTES", str(2**63 - 1))
+    assert positive_size("JS_MAX_BYTES", "60GiB") == 2**63 - 1
+
+    for bad in ("0", "9999999999GiB", str(2**63)):
+        monkeypatch.setenv("JS_MAX_BYTES", bad)
+        with pytest.raises(ConfigError, match="JS_MAX_BYTES"):
+            positive_size("JS_MAX_BYTES", "60GiB")
+
+
+@pytest.mark.parametrize(
+    ("name", "unit", "max_count", "seconds_per_unit"),
+    [
+        ("SHUTDOWN_TIMEOUT_SECONDS", "", 9_223_372_036, 1),
+        ("JS_MAX_AGE", "s", 9_223_372_036, 1),
+        ("JS_MAX_AGE", "m", 153_722_867, 60),
+        ("JS_MAX_AGE", "h", 2_562_047, 3600),
+    ],
+)
+def test_duration_fits_go_signed_64_bit_nanoseconds(name, unit, max_count, seconds_per_unit):
+    assert parse_duration(name, f"{max_count}{unit}") == max_count * seconds_per_unit
+    for overflow in (f"{max_count + 1}{unit}", "9" * 5000 + unit):
+        with pytest.raises(ConfigError, match=name):
+            parse_duration(name, overflow)

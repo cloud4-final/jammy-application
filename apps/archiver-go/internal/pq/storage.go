@@ -166,6 +166,8 @@ type coverage struct {
 
 func ManifestKey(key string) string { return strings.TrimSuffix(key, ".parquet") + ".manifest.json" }
 
+var ErrManifestConflict = errors.New("existing archive manifest differs")
+
 type Archive struct {
 	Objects  Objects
 	Dir      string
@@ -387,7 +389,7 @@ func PutJSON[T any](ctx context.Context, store Objects, key string, value *T, ma
 	if !bytes.Equal(data, stored) {
 		var existing T
 		if json.Unmarshal(stored, &existing) != nil || !matches(existing) {
-			return "", fmt.Errorf("existing archive manifest differs for %s", key)
+			return "", fmt.Errorf("%w for %s", ErrManifestConflict, key)
 		}
 		*value = existing
 	}
