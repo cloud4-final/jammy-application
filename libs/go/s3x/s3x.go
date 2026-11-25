@@ -34,6 +34,8 @@ func New(ctx context.Context) (*s3.Client, error) {
 	}
 	return s3.NewFromConfig(cfg, func(options *s3.Options) {
 		options.UsePathStyle = forcePathStyle
+		options.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
+		options.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
 		if endpoint != "" {
 			options.BaseEndpoint = aws.String(endpoint)
 		}

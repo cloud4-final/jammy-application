@@ -15,6 +15,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from prometheus_client import CollectorRegistry
 
+from . import lifecycle
 from .config import CommonConfig, env
 
 HTTP_BUCKETS = (
@@ -71,7 +72,8 @@ def _resource(service: str, cfg: CommonConfig) -> Resource:
 
 
 def setup_tracing(service: str, cfg: CommonConfig) -> None:
-    tracer_provider = TracerProvider(resource=_resource(service, cfg))
+    tracer_provider = TracerProvider(resource=_resource(service, cfg), shutdown_on_exit=False)
+    lifecycle.on_shutdown(tracer_provider.shutdown)
     if endpoint := env("OTEL_EXPORTER_OTLP_ENDPOINT"):
         tracer_provider.add_span_processor(
             BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint))
@@ -103,6 +105,7 @@ def setup(service: str, cfg: CommonConfig) -> Meter:
     )
     provider = MeterProvider(
         resource=resource,
+        shutdown_on_exit=False,
         metric_readers=[reader],
         views=[
             View(instrument_name="*", aggregation=DropAggregation()),
@@ -118,6 +121,7 @@ def setup(service: str, cfg: CommonConfig) -> Meter:
             http_duration_view,
         ],
     )
+    lifecycle.on_shutdown(lambda: provider.shutdown(timeout_millis=cfg.shutdown_timeout_s * 1000))
     metrics.set_meter_provider(provider)
 
     setup_tracing(service, cfg)

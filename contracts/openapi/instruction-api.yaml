@@ -65,6 +65,9 @@ paths:
             conflict if this instruction ID is already associated with a different body,
             or stale_epoch if the header is below the local site lease epoch.
           content: *problemContent
+        '413':
+          description: body_too_large. The request body exceeds INSTRUCTION_MAX_BODY_BYTES.
+          content: *problemContent
         '422':
           description: invalid_body.
           content: *problemContent
@@ -210,7 +213,9 @@ components:
             - https://jammy.dev/problems/unknown_key
             - https://jammy.dev/problems/invalid_body
             - https://jammy.dev/problems/conflict
+            - https://jammy.dev/problems/stale_epoch
             - https://jammy.dev/problems/not_found
+            - https://jammy.dev/problems/body_too_large
             - https://jammy.dev/problems/payload_too_large
             - https://jammy.dev/problems/bad_request
             - https://jammy.dev/problems/too_many_requests

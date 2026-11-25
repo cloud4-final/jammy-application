@@ -10,7 +10,8 @@ from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
 from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.trace import get_current_span
 
-from .config import CommonConfig, ConfigError, env
+from . import lifecycle
+from .config import CommonConfig, env, parse_log_level
 from .obs import _resource
 
 
@@ -37,19 +38,29 @@ class _JsonFormatter(logging.Formatter):
         )
 
 
+class _OTLPHandler(LoggingHandler):
+    # Provider shutdown flushes pending records within the lifecycle deadline.
+    flushOnClose = False
+
+
 def setup(service: str, cfg: CommonConfig) -> None:
     formatter = _JsonFormatter(service, cfg)
     console = logging.StreamHandler(sys.stdout)
     console.setFormatter(formatter)
 
-    try:
-        logging.basicConfig(level=cfg.log_level.upper(), handlers=[console], force=True)
-    except ValueError:
-        raise ConfigError("LOG_LEVEL is invalid") from None
+    logging.basicConfig(level=parse_log_level(cfg.log_level), handlers=[console], force=True)
 
     if endpoint := env("OTEL_EXPORTER_OTLP_ENDPOINT"):
-        provider = LoggerProvider(resource=_resource(service, cfg))
+        provider = LoggerProvider(resource=_resource(service, cfg), shutdown_on_exit=False)
         provider.add_log_record_processor(BatchLogRecordProcessor(OTLPLogExporter(endpoint=endpoint)))
-        handler = LoggingHandler(logger_provider=provider)
+        handler = _OTLPHandler(logger_provider=provider)
         handler.setFormatter(formatter)
-        logging.getLogger().addHandler(handler)
+        root = logging.getLogger()
+        root.addHandler(handler)
+
+        def shutdown() -> None:
+            root.removeHandler(handler)
+            handler.close()
+            provider.shutdown()
+
+        lifecycle.on_shutdown(shutdown)

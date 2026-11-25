@@ -283,7 +283,10 @@ def test_transaction_error_counts_messages_and_ack_follows_success(monkeypatch):
             prepare=AsyncMock(),
             fetch=AsyncMock(return_value=messages),
             commit=AsyncMock(
-                side_effect=[ValueError("rejected"), ([], ["ok", "ok"], 2)]
+                side_effect=[
+                    psycopg.OperationalError("transient"),
+                    ([], ["ok", "ok"], 2),
+                ]
             ),
             pending=AsyncMock(side_effect=lambda: stop.set() or 0),
         )
@@ -414,10 +417,12 @@ def test_processor_config_rejects_invalid_limits(monkeypatch):
     monkeypatch.setenv("SITE_ID", "test")
     monkeypatch.setenv("DATABASE_URL", "postgresql://localhost/test")
     monkeypatch.setenv("PIPELINE_MODE", "direct-db")
+    assert ProcessorConfig.from_env().max_deliver == 10
     for key, value in (
         ("CONSUMER_NAME", ""),
         ("ACK_WAIT_SECONDS", "0"),
         ("MAX_ACK_PENDING", "0"),
+        ("PROCESSOR_MAX_DELIVER", "0"),
         ("FETCH_BATCH", "0"),
         ("STATE_FLUSH_SECONDS", "0"),
         ("ANOMALY_DROP_RATIO", "0"),
@@ -459,5 +464,177 @@ def test_processor_terminates_undecodable_batch_without_database():
         message.ack.assert_not_awaited()
         record_poison.assert_called_once()
         pool.connection.assert_not_called()
+
+    asyncio.run(run())
+
+
+def test_batch_span_extracts_traceparent_from_nats_headers(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+    from opentelemetry.trace import SpanKind, StatusCode
+    from processor.main import Processor
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr("processor.main.trace.get_tracer", provider.get_tracer)
+
+    async def run():
+        for header_name in ("traceparent", "Traceparent"):
+            stop = asyncio.Event()
+            msg = SimpleNamespace(
+                headers={
+                    header_name: "00-00000000000000000000000000000042-0000000000000023-01",
+                    "Nats-Msg-Id": "b-1",
+                },
+                ack=AsyncMock(),
+            )
+            source = SimpleNamespace(
+                stream="raw-a1",
+                prepare=AsyncMock(),
+                fetch=AsyncMock(return_value=[msg]),
+                commit=AsyncMock(return_value=([], ["ok"], 0.1)),
+                pending=AsyncMock(side_effect=lambda s=stop: s.set() or 0),
+            )
+            consumer = Processor(SimpleNamespace(drop_ratio=0.5), None, Mock())
+            consumer.database_ready.set()
+            consumer.client = SimpleNamespace(is_connected=True)
+            await consumer.consume(stop, source)
+
+        stop = asyncio.Event()
+        multi = [
+            SimpleNamespace(
+                headers={
+                    "traceparent": "00-00000000000000000000000000000011-0000000000000012-01"
+                },
+                ack=AsyncMock(),
+            ),
+            SimpleNamespace(
+                headers={
+                    "Traceparent": "00-00000000000000000000000000000021-0000000000000022-01"
+                },
+                ack=AsyncMock(),
+            ),
+        ]
+        source = SimpleNamespace(
+            stream="raw-a1",
+            prepare=AsyncMock(),
+            fetch=AsyncMock(return_value=multi),
+            commit=AsyncMock(side_effect=TimeoutError("db down")),
+            pending=AsyncMock(side_effect=lambda: stop.set() or 0),
+        )
+        consumer = Processor(SimpleNamespace(drop_ratio=0.5), None, Mock())
+        consumer.database_ready.set()
+        consumer.client = SimpleNamespace(is_connected=True)
+        monkeypatch.setattr(
+            "processor.main.asyncio.sleep", AsyncMock(side_effect=lambda _: stop.set())
+        )
+        await consumer.consume(stop, source)
+
+    asyncio.run(run())
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 3
+    for span in spans[:2]:
+        assert span.kind == SpanKind.CONSUMER
+        assert span.parent.span_id == 0x23
+        assert span.context.trace_id == 0x42
+        assert span.attributes["batch_id"] == "b-1"
+    assert spans[2].status.status_code == StatusCode.ERROR
+    assert [link.context.trace_id for link in spans[2].links] == [0x11, 0x21]
+    provider.shutdown()
+
+
+def test_batch_id_mismatch_termed_as_poison_and_db_error_naks_with_backoff():
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+
+    from processor.source_jetstream import JetStreamSource
+
+    async def run():
+        pool = Mock()
+        record_poison = Mock()
+        mismatch = SimpleNamespace(
+            data=EventBatch(
+                batch_id="expected", events=[Event(profile="synth-small", routing_key="a")]
+            ).SerializeToString(),
+            headers={
+                "Content-Type": "application/x-protobuf",
+                "Nats-Msg-Id": "different",
+                "Jammy-Received-At-Ms": "0",
+            },
+            term=AsyncMock(),
+            ack=AsyncMock(),
+            nak=AsyncMock(),
+        )
+        source = JetStreamSource(
+            pool,
+            None,
+            consumer="processor",
+            stream="raw-test",
+            ack_wait=30,
+            max_pending=64,
+            max_deliver=10,
+            batch_size=64,
+            detector=SimpleNamespace(write=AsyncMock()),
+        )
+        assert await source.commit([mismatch], record_poison) == ([], ["poison"], None)
+        mismatch.term.assert_awaited_once()
+        mismatch.ack.assert_not_awaited()
+        mismatch.nak.assert_not_awaited()
+        record_poison.assert_called_once()
+        pool.connection.assert_not_called()
+
+        @asynccontextmanager
+        async def failing_connection(**_kwargs):
+            raise psycopg.OperationalError("connection lost")
+            yield  # pragma: no cover
+
+        valid = SimpleNamespace(
+            data=EventBatch(
+                batch_id="valid", events=[Event(profile="synth-small", routing_key="a")]
+            ).SerializeToString(),
+            headers={
+                "Content-Type": "application/x-protobuf",
+                "Nats-Msg-Id": "valid",
+                "Jammy-Received-At-Ms": "0",
+            },
+            term=AsyncMock(),
+            ack=AsyncMock(),
+            nak=AsyncMock(),
+        )
+        failing_source = JetStreamSource(
+            SimpleNamespace(connection=failing_connection),
+            None,
+            consumer="processor",
+            stream="raw-test",
+            ack_wait=30,
+            max_pending=64,
+            max_deliver=7,
+            batch_size=64,
+            detector=SimpleNamespace(write=AsyncMock()),
+        )
+        try:
+            await failing_source.commit([valid], record_poison)
+        except psycopg.OperationalError:
+            pass
+        else:
+            raise AssertionError("expected OperationalError")
+        valid.nak.assert_awaited_once_with(delay=1)
+        valid.term.assert_not_awaited()
+        valid.ack.assert_not_awaited()
+
+        js = SimpleNamespace(
+            add_consumer=AsyncMock(), pull_subscribe_bind=AsyncMock(return_value="sub")
+        )
+        failing_source.client = SimpleNamespace(jetstream=lambda: js)
+        await failing_source.prepare()
+        assert js.add_consumer.await_args.kwargs["config"].max_deliver == 7
 
     asyncio.run(run())
