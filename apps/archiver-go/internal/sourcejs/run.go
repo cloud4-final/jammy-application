@@ -16,13 +16,23 @@ const (
 
 // Run owns a stream's pull and flush cycle. A failed flush keeps its original
 // batch so a retry uses the same sequence bounds and object keys.
-func Run(ctx context.Context, consumer jetstream.Consumer, flushBytes int64, interval, ackWait time.Duration,
+func Run(ctx context.Context, consumer jetstream.Consumer, flushBytes int64, interval, ackWait, drainTimeout time.Duration,
 	flush func(context.Context, []jetstream.Msg) error, unacked func(int)) error {
 	var pending []jetstream.Msg
 	positions := make(map[uint64]int)
 	var size int64
 	var deadline time.Time
-	drain := context.WithoutCancel(ctx)
+	drain, cancelDrain := context.WithCancelCause(context.WithoutCancel(ctx))
+	defer cancelDrain(nil)
+	go func() {
+		select {
+		case <-ctx.Done():
+			if pause(drain, drainTimeout) {
+				cancelDrain(context.DeadlineExceeded)
+			}
+		case <-drain.Done():
+		}
+	}()
 	write := func() error {
 		if len(pending) == 0 {
 			return nil
@@ -40,7 +50,13 @@ func Run(ctx context.Context, consumer jetstream.Consumer, flushBytes int64, int
 				unacked(0)
 				return nil
 			}
-			if !pause(ctx, RetryWait) {
+			if errors.Is(err, errBatchID) {
+				return err
+			}
+			if ctx.Err() == nil && pause(ctx, RetryWait) {
+				continue
+			}
+			if drainTimeout <= 0 || !pause(drain, RetryWait) {
 				return err
 			}
 		}

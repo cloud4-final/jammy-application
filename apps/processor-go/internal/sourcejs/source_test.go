@@ -146,6 +146,44 @@ func TestJetStreamProcessor(t *testing.T) {
 
 	})
 
+	t.Run("TestLatestStateTiePreservesDeliveryOrder", func(t *testing.T) {
+		first := aggregate.Event{Profile: "synth-small", RoutingKey: "delivery-order", Time: time.Now().UTC(), Value: 10}
+		second := first
+		second.Value = 20
+		batches := []state.Batch{
+			{ID: "z-delivered-first", Events: []aggregate.Event{first}},
+			{ID: "a-delivered-second", Events: []aggregate.Event{second}},
+		}
+		_, err := store.Commit(ctx, batches)
+		must(t, err)
+		must(t, store.FlushLatest(ctx))
+		var value float64
+		must(t, pool.QueryRow(ctx, "SELECT primary_value FROM jammy.latest_state WHERE routing_key=$1", first.RoutingKey).Scan(&value))
+		if value != first.Value {
+			t.Fatalf("latest value = %v, want first delivered value %v", value, first.Value)
+		}
+	})
+
+	t.Run("TestCommitTimesOutWaitingForPool", func(t *testing.T) {
+		cfg := pool.Config()
+		cfg.MaxConns = 1
+		cfg.MinConns = 0
+		blocked, err := pgxpool.NewWithConfig(ctx, cfg)
+		must(t, err)
+		defer blocked.Close()
+		conn, err := blocked.Acquire(ctx)
+		must(t, err)
+		defer conn.Release()
+
+		deadline, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		blockedStore := state.New(blocked, "processor", time.Hour, .5, nil)
+		_, err = blockedStore.Commit(deadline, []state.Batch{{ID: "pool-timeout"}})
+		if !errors.Is(err, context.DeadlineExceeded) || deadline.Err() != nil {
+			t.Fatalf("commit error = %v, outer context error = %v, want pool acquisition timeout", err, deadline.Err())
+		}
+	})
+
 	t.Run("TestDropDetailsAndLatestCoalescing", func(t *testing.T) {
 		minute := time.Now().UTC().Truncate(time.Minute)
 		events := []aggregate.Event{

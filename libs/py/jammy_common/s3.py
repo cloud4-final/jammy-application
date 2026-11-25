@@ -3,7 +3,7 @@
 import boto3
 from botocore.config import Config
 
-from .config import CommonConfig, ConfigError, env
+from .config import CommonConfig, ConfigError, env, validate_http_endpoint
 
 
 def normalize_prefix(raw: str) -> str:
@@ -16,6 +16,9 @@ def prefix() -> str:
 
 
 def client(cfg: CommonConfig):
+    endpoint = env("S3_ENDPOINT")
+    if endpoint:
+        validate_http_endpoint("S3_ENDPOINT", endpoint)
     path_style = env("S3_FORCE_PATH_STYLE", "false")
     if path_style not in {"true", "false"}:
         raise ConfigError("S3_FORCE_PATH_STYLE must be true or false")
@@ -28,7 +31,7 @@ def client(cfg: CommonConfig):
         options["s3"] = {"addressing_style": "path"}
     return boto3.client(
         "s3",
-        endpoint_url=env("S3_ENDPOINT") or None,
+        endpoint_url=endpoint or None,
         region_name=env("S3_REGION", "ap-northeast-2"),
         config=Config(**options),
     )

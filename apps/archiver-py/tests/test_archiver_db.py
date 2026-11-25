@@ -26,6 +26,48 @@ from testcontainers.postgres import PostgresContainer
 MIGRATIONS = Path(__file__).resolve().parents[3] / "contracts/db/migrations"
 
 
+def test_poll_seals_after_export_transaction_commits():
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    async def run():
+        events = []
+        name = "raw_events_2026112300"
+
+        @asynccontextmanager
+        async def connection(**_kwargs):
+            events.append("begin")
+            yield conn
+            events.append("commit")
+
+        conn = SimpleNamespace(
+            execute=AsyncMock(
+                side_effect=[
+                    SimpleNamespace(fetchone=AsyncMock(return_value=(True,))),
+                    SimpleNamespace(fetchall=AsyncMock(return_value=[(name,)])),
+                    SimpleNamespace(fetchone=AsyncMock(return_value=(True,))),
+                    SimpleNamespace(fetchall=AsyncMock(return_value=[])),
+                ]
+            )
+        )
+        archive = DbArchive(SimpleNamespace(connection=connection), None, None)
+        archive._partition_status = AsyncMock(return_value=(1, "0", "", 0))
+        archive._archive = AsyncMock(return_value=True)
+
+        async def seal(_conn, oldest):
+            events.append(("seal", oldest))
+
+        archive._seal_exported = seal
+        assert await archive.poll()
+        assert events == [
+            "begin", ("seal", name), "commit",
+            "begin", ("seal", None), "commit",
+        ]
+
+    asyncio.run(run())
+
+
 def test_db_export_sets_lock_timeout_before_locking():
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
