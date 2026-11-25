@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/cloud4-final/jammy-5th/apps/ingest-go/internal/server"
-	pb "github.com/cloud4-final/jammy-5th/libs/go/pb/jammyv1"
+	"github.com/cloud4-final/jammy-application/apps/ingest-go/internal/server"
+	pb "github.com/cloud4-final/jammy-application/libs/go/pb/jammyv1"
 	"github.com/klauspost/compress/zstd"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
