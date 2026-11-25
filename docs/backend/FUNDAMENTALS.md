@@ -365,7 +365,7 @@ JAMMY 백엔드 코드·인프라·CI 리뷰 시 프로덕션 장애(리소스 �
   - 이유: 태그가 아닌 다이제스트 서명으로 이미지 변조를 막고, 장기 서명 키 유출 위험을 제거한다.
   - 검증: `rg -n "cosign-installer|cosign sign" .github/workflows/backend.yml`.
   - 출처: [Sigstore Cosign](https://docs.sigstore.dev/cosign/signing/signing_with_containers/)
-- [ ] **정적 워크플로 검사(`actionlint`)와 릴리스 저장소·브랜치 가드**: 포크 PR에서 실 배포가 돌지 않도록 `RELEASE_BUILD`를 `push && refs/heads/main && github.repository == 'cloud4-final/jammy-5th'`로 제한하고 `actionlint`/`shellcheck`를 적용한다.
+- [ ] **정적 워크플로 검사(`actionlint`)와 릴리스 저장소·브랜치 가드**: 포크 PR에서 실 배포가 돌지 않도록 `RELEASE_BUILD`를 `push && refs/heads/main && github.repository == 'cloud4-final/jammy-application'`로 제한하고 `actionlint`/`shellcheck`를 적용한다.
   - 이유: 워크플로 표현식 인젝션이나 포크 환경에서의 잘못된 게시 시도를 사전에 차단한다.
   - 검증: `rg -n "RELEASE_BUILD|actionlint" .github/workflows/ docs/backend/VERSIONS.md`.
   - 출처: [actionlint](https://github.com/rhysd/actionlint)
