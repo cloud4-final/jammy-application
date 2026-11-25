@@ -3,6 +3,8 @@
 Run with `SITE_ID`, `DATABASE_URL` or `DATABASE_URL_FILE`, and the migrated
 JAMMY schema. JetStream also requires `NATS_URL` and `NATS_STREAMS`. In
 `PIPELINE_MODE=direct-db`, apply migration 0002 for the xid8 cursor.
+With `WRITE_FENCE=true`, apply migration 0003 to create
+`jammy.site_lease_state`.
 
 In JetStream mode one pull is committed in one PostgreSQL transaction. Each
 batch is claimed before aggregation and acknowledged after commit. Direct DB

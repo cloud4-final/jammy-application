@@ -2,7 +2,14 @@
 
 from psycopg_pool import AsyncConnectionPool
 
-from .config import CommonConfig, ConfigError, env, env_int, positive_int
+from .config import (
+    CommonConfig,
+    ConfigError,
+    env,
+    env_int,
+    positive_int,
+    validate_database_url,
+)
 
 
 def worker_pool_limits(workers: int, worker_index: int) -> tuple[int, int]:
@@ -28,7 +35,7 @@ async def pool(
     worker_min, worker_max = worker_pool_limits(workers, worker_index)
     connection_pool = AsyncConnectionPool(
         name=cfg.instance_id,
-        conninfo=env("DATABASE_URL", required=True),
+        conninfo=validate_database_url(env("DATABASE_URL", required=True)),
         min_size=worker_min,
         max_size=worker_max,
         open=False,

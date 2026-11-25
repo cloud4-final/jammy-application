@@ -28,7 +28,10 @@ class SignedRequest:
 
     def verify(self, request: Request, body: bytearray) -> bool:
         raw_path = request.scope.get("raw_path")
-        path = raw_path.decode("ascii") if raw_path is not None else request.url.path
+        try:
+            path = raw_path.decode("ascii") if raw_path is not None else request.url.path
+        except UnicodeDecodeError:
+            return False
         expected = sign(self.secret, self.timestamp, request.method, path, body)
         return hmac.compare_digest(self.signature, expected)
 

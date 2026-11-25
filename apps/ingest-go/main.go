@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/cloud4-final/jammy-5th/apps/ingest-go/internal/server"
@@ -104,6 +105,9 @@ func load() (settings, error) {
 		}
 		if cfg.stream == "" {
 			return settings{}, errors.New("INGEST_STREAM is required")
+		}
+		if strings.ContainsAny(cfg.stream, ">*. /\\\t\r\n") {
+			return settings{}, errors.New("invalid INGEST_STREAM")
 		}
 	} else {
 		dbURL, err := config.Lookup("DATABASE_URL", "")
