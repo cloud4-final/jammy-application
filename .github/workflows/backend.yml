@@ -134,6 +134,11 @@ jobs:
           if [[ -f scripts/tests/test_image_tag.sh ]]; then
             scripts/tests/test_image_tag.sh
           fi
+      - name: Check dashboards and Alloy configuration
+        run: |
+          if [[ -f observability/dashboards/check.sh ]]; then
+            bash observability/dashboards/check.sh
+          fi
 
   py:
     name: Python / ${{ matrix.scope || matrix.package }}

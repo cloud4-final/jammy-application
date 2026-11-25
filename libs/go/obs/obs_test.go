@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cloud4-final/jammy-5th/libs/go/admin"
-	"github.com/cloud4-final/jammy-5th/libs/go/config"
-	"github.com/cloud4-final/jammy-5th/libs/go/obs"
+	"github.com/cloud4-final/jammy-application/libs/go/admin"
+	"github.com/cloud4-final/jammy-application/libs/go/config"
+	"github.com/cloud4-final/jammy-application/libs/go/obs"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"

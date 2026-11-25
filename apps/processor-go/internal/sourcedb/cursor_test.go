@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cloud4-final/jammy-5th/apps/processor-go/internal/aggregate"
-	"github.com/cloud4-final/jammy-5th/apps/processor-go/internal/state"
-	"github.com/cloud4-final/jammy-5th/libs/go/leasefence"
+	"github.com/cloud4-final/jammy-application/apps/processor-go/internal/aggregate"
+	"github.com/cloud4-final/jammy-application/apps/processor-go/internal/state"
+	"github.com/cloud4-final/jammy-application/libs/go/leasefence"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 

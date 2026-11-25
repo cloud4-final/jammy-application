@@ -118,7 +118,7 @@ def test_check_go_packages_fails_on_error(tmp_path: Path) -> None:
     rc, out, _ = run_check("exit 0", "empty")
     assert (rc, out) == (0, "run=false")
 
-    rc, out, _ = run_check("echo github.com/cloud4-final/jammy-5th/apps/ingest-go", "nonempty")
+    rc, out, _ = run_check("echo github.com/cloud4-final/jammy-application/apps/ingest-go", "nonempty")
     assert (rc, out) == (0, "run=true")
 
     rc, out, stderr = run_check("echo 'broken go.mod' >&2; exit 2", "error")
