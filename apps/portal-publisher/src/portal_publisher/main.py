@@ -29,6 +29,11 @@ async def s3_ready(store, bucket: str, *, timeout: float | None = None) -> bool:
     return True
 
 
+def _next_tick_delay(started: datetime, finished: datetime, interval: int) -> float:
+    next_tick = (int(started.timestamp()) // interval + 1) * interval
+    return max(0.0, next_tick - finished.timestamp())
+
+
 async def serve(stop: asyncio.Event, cfg: CommonConfig) -> None:
     if not cfg.instance_id:
         raise ConfigError("INSTANCE_ID must not be empty")
@@ -65,8 +70,13 @@ async def serve(stop: asyncio.Event, cfg: CommonConfig) -> None:
         async with asyncio.TaskGroup() as tasks:
             tasks.create_task(watch_shutdown())
             while not stop.is_set():
-                result = await publisher.publish_once(datetime.now(UTC))
-                delay = 1 if result == "error" else interval
+                started = datetime.now(UTC)
+                result = await publisher.publish_once(started)
+                delay = (
+                    1
+                    if result == "error"
+                    else _next_tick_delay(started, datetime.now(UTC), interval)
+                )
                 try:
                     await asyncio.wait_for(stop.wait(), timeout=delay)
                 except TimeoutError:

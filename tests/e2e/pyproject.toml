@@ -22,3 +22,6 @@ markers = [
     "mvp_only: test only runs on ARM=mvp (direct-db)",
     "control: control-plane scenario",
 ]
+
+[tool.ruff]
+extend-exclude = ["pb"]

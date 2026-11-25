@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from itertools import pairwise
 from pathlib import Path
 from threading import Event
+from types import SimpleNamespace
 from urllib.error import HTTPError
 from urllib.request import urlopen
 
@@ -147,6 +148,100 @@ def test_portal_retries_errors_after_one_second(postgres, monkeypatch):
         )
 
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize(
+    ("start_offset_s", "publish_duration_s", "expected_delays", "minute_offsets"),
+    [
+        (60, 35, [25.0, 25.0], [0, 1, 2]),
+        (59, 2, [0.0, 57.0], [-1, 0, 1]),
+    ],
+)
+def test_portal_schedule_aligns_to_minute_boundaries_without_skipping(
+    postgres,
+    minute,
+    monkeypatch,
+    start_offset_s,
+    publish_duration_s,
+    expected_delays,
+    minute_offsets,
+):
+    expected_minutes = [
+        (minute + timedelta(minutes=offset)).strftime("%Y%m%d%H%M")
+        for offset in minute_offsets
+    ]
+    with psycopg.connect(postgres) as conn:
+        conn.execute("TRUNCATE jammy.assets, jammy.summary_1m")
+        conn.execute("INSERT INTO jammy.assets VALUES ('a', 'team-1', 'solar', 10)")
+        with conn.cursor() as cursor:
+            cursor.executemany(
+                """
+                INSERT INTO jammy.summary_1m (profile, routing_key, minute, count, sum, min, max)
+                VALUES ('solar', 'a', %s, 2, 6, 1, 5)
+                """,
+                [(minute + timedelta(minutes=offset),) for offset in minute_offsets],
+            )
+
+    monkeypatch.setenv("DATABASE_URL", postgres)
+    monkeypatch.setenv("S3_BUCKET", "test-bucket")
+    monkeypatch.setenv("PORTAL_INTERVAL_SECONDS", "60")
+
+    class Store(ObjectStore):
+        def close(self):
+            pass
+
+    store = Store()
+    clock = [minute + timedelta(seconds=start_offset_s)]
+    delays = []
+    calls = 0
+    original_publish = Publisher.publish_once
+
+    class FakeDatetime:
+        @staticmethod
+        def now(_tz=None):
+            return clock[0]
+
+    async def timed_publish(self, now):
+        nonlocal calls
+        result = await original_publish(self, now)
+        clock[0] += timedelta(seconds=publish_duration_s)
+        calls += 1
+        if calls == len(expected_minutes):
+            stop.set()
+        return result
+
+    async def fake_wait_for(stop_waiter, *, timeout):
+        if stop.is_set():
+            return await stop_waiter
+        stop_waiter.close()
+        delays.append(timeout)
+        clock[0] += timedelta(seconds=timeout)
+        raise TimeoutError
+
+    stop = asyncio.Event()
+    monkeypatch.setattr(main.s3, "client", lambda _cfg: store)
+    monkeypatch.setattr(main, "datetime", FakeDatetime)
+    monkeypatch.setattr(Publisher, "publish_once", timed_publish)
+    monkeypatch.setattr(
+        main,
+        "asyncio",
+        SimpleNamespace(
+            Event=asyncio.Event,
+            TaskGroup=asyncio.TaskGroup,
+            timeout=asyncio.timeout,
+            to_thread=asyncio.to_thread,
+            wait_for=fake_wait_for,
+        ),
+    )
+
+    async def exercise():
+        cfg = CommonConfig("site-a", "portal", 8080, 0, "info", 25, "jetstream")
+        await main.serve(stop, cfg)
+
+    asyncio.run(exercise())
+    assert delays == pytest.approx(expected_delays)
+    for suffix in expected_minutes:
+        assert f"portal/team-1/1m/{suffix}.json" in store.objects
 
 
 def test_publishes_per_tenant(postgres, minute):

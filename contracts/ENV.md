@@ -18,7 +18,7 @@ An invalid value fails startup. The shared [environment fixtures](testdata/env_c
 
 | Variable | Default | Required | Use |
 | --- | --- | --- | --- |
-| `SITE_ID` | — | Yes | Site string for logs and metrics. Values such as `site-a` are accepted without a format check. |
+| `SITE_ID` | — | Yes | Site string for logs and metrics, such as `jammy-a`, `jammy-b`, `jammy-c`, or `jammy-obs` (`site-*` is used for event `region`). Accepted without a format check. |
 | `INSTANCE_ID` | Hostname | No | Instance in metrics and logs, and `ingest_id`. |
 | `HTTP_PORT` | `8080` | No | Public API port for instruction-api, ingest and plantsim. |
 | `ADMIN_PORT` | `9090` | No | `/livez`, `/readyz`, and `/metrics`. |

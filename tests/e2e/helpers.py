@@ -22,8 +22,9 @@ import httpx
 import pyarrow.parquet as pq
 import zstandard
 from botocore.config import Config as BotoConfig
-from pb import envelope_pb2, profiles_pb2
 from psycopg import sql
+
+from pb import envelope_pb2, profiles_pb2
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CONTRACTS_DIR = REPO_ROOT / "contracts"
@@ -108,7 +109,7 @@ class E2EConfig:
             lease_table=os.environ.get(
                 "E2E_LEASE_TABLE", os.environ.get("LEASE_TABLE", "jammy-site-lease")
             ),
-            site_id=os.environ.get("E2E_SITE_ID", os.environ.get("SITE_ID", "site-a")),
+            site_id=os.environ.get("E2E_SITE_ID", os.environ.get("SITE_ID", "jammy-a")),
             control_only=os.environ.get("E2E_CONTROL_ONLY", "").strip() == "1",
             hmac_key_id=hmac_key_id,
             hmac_secret=hmac_secret,

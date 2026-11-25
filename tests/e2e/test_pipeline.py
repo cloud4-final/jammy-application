@@ -13,6 +13,7 @@ import httpx
 import nats
 import pytest
 import zstandard
+
 from helpers import (
     GATE_CASES_DIR,
     E2EConfig,

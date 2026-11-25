@@ -11,6 +11,8 @@ from datetime import UTC, datetime, timedelta
 import httpx
 import nats
 import pytest
+from nats.js.api import StreamConfig
+
 from helpers import (
     E2EConfig,
     build_event,
@@ -25,7 +27,6 @@ from helpers import (
     read_parquet_table,
     start_container,
 )
-from nats.js.api import StreamConfig
 
 
 def test_kill9_processor_exact(

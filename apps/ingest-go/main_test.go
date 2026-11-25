@@ -40,6 +40,22 @@ func TestQuarantineDefaults(t *testing.T) {
 }
 
 func TestLoadValidatesBackendEnv(t *testing.T) {
+	t.Run("jetstream missing NATS_URL with only SITE_ID", func(t *testing.T) {
+		t.Setenv("SITE_ID", "ci")
+		for _, name := range []string{"PIPELINE_MODE", "NATS_URL", "NATS_URL_FILE", "INGEST_STREAM", "INGEST_STREAM_FILE"} {
+			if prev, ok := os.LookupEnv(name); ok {
+				t.Cleanup(func() { _ = os.Setenv(name, prev) })
+			} else {
+				t.Cleanup(func() { _ = os.Unsetenv(name) })
+			}
+			_ = os.Unsetenv(name)
+		}
+		_, err := load()
+		if err == nil || err.Error() != "NATS_URL is required" {
+			t.Fatalf("got err=%v, want exact %q", err, "NATS_URL is required")
+		}
+	})
+
 	t.Run("jetstream missing NATS_URL", func(t *testing.T) {
 		t.Setenv("SITE_ID", "test")
 		t.Setenv("PIPELINE_MODE", "jetstream")
