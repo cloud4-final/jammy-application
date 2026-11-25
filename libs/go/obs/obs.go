@@ -65,17 +65,27 @@ func Setup(service string, c config.Common) (metric.Meter, func(context.Context)
 		// Exemplars retain attributes removed by the metric view.
 		sdkmetric.WithExemplarFilter(exemplar.AlwaysOffFilter),
 	)
-	shutdown := metrics.Shutdown
+	traceOpts := []sdktrace.TracerProviderOption{sdktrace.WithResource(res)}
+	var logs *sdklog.LoggerProvider
 	if endpoint != "" {
-		traces, logs, err := exporters(ctx, endpoint, res)
+		traceExporter, logExporter, err := exporters(ctx, endpoint)
 		if err != nil {
 			return nil, nil, errors.Join(err, metrics.Shutdown(ctx))
 		}
-		otel.SetTracerProvider(traces)
+		traceOpts = append(traceOpts, sdktrace.WithBatcher(traceExporter))
+		logs = sdklog.NewLoggerProvider(sdklog.WithResource(res), sdklog.WithProcessor(sdklog.NewBatchProcessor(logExporter)))
+	}
+	traces := sdktrace.NewTracerProvider(traceOpts...)
+	otel.SetTracerProvider(traces)
+	if logs != nil {
 		otel.SetLoggerProvider(logs)
-		shutdown = func(ctx context.Context) error {
-			return errors.Join(metrics.Shutdown(ctx), traces.Shutdown(ctx), logs.Shutdown(ctx))
+	}
+	shutdown := func(ctx context.Context) error {
+		err := errors.Join(metrics.Shutdown(ctx), traces.Shutdown(ctx))
+		if logs != nil {
+			err = errors.Join(err, logs.Shutdown(ctx))
 		}
+		return err
 	}
 	registry.Store(reg)
 	otel.SetMeterProvider(metrics)
@@ -85,7 +95,7 @@ func Setup(service string, c config.Common) (metric.Meter, func(context.Context)
 	return metrics.Meter(service), shutdown, nil
 }
 
-func exporters(ctx context.Context, endpoint string, res *resource.Resource) (*sdktrace.TracerProvider, *sdklog.LoggerProvider, error) {
+func exporters(ctx context.Context, endpoint string) (sdktrace.SpanExporter, sdklog.Exporter, error) {
 	parsed, err := url.Parse(endpoint)
 	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 		return nil, nil, errors.New("invalid OTEL_EXPORTER_OTLP_ENDPOINT")
@@ -98,8 +108,7 @@ func exporters(ctx context.Context, endpoint string, res *resource.Resource) (*s
 	if err != nil {
 		return nil, nil, errors.Join(err, traces.Shutdown(ctx))
 	}
-	return sdktrace.NewTracerProvider(sdktrace.WithResource(res), sdktrace.WithBatcher(traces)),
-		sdklog.NewLoggerProvider(sdklog.WithResource(res), sdklog.WithProcessor(sdklog.NewBatchProcessor(logs))), nil
+	return traces, logs, nil
 }
 
 func resourceLabel(kv attribute.KeyValue) bool {

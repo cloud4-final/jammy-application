@@ -57,9 +57,12 @@ proto-check:
 	tmp=$$(mktemp -d .proto-check.XXXXXXXX); \
 	trap 'rm -rf "$$tmp"' EXIT; \
 	$(MAKE) proto PROTO_OUT="$$tmp"; \
-	for pair in "$(GO_PROTO_DIR):*.pb.go" "$(PY_PROTO_DIR):*_pb2.py" "$(E2E_PROTO_DIR):*_pb2.py"; do \
-		dir=$${pair%%:*}; pattern=$${pair#*:}; \
-		[ -d "$$dir" ] || continue; \
+	for output in "$(GO_PROTO_DIR):*.pb.go:libs/go" \
+		"$(PY_PROTO_DIR):*_pb2.py:libs/py/jammy_common" \
+		"$(E2E_PROTO_DIR):*_pb2.py:tests/e2e/conftest.py"; do \
+		dir=$${output%%:*}; consumer=$${output##*:}; \
+		pattern=$${output#*:}; pattern=$${pattern%:*}; \
+		[ -d "$$dir" ] || [ -e "$$consumer" ] || continue; \
 		for file in "$$tmp"/"$$dir"/$$pattern; do \
 			diff -u "$${file#"$$tmp"/}" "$$file"; \
 		done; \
@@ -91,6 +94,9 @@ migrations-check:
 openapi-check:
 	docker run --rm -v "$(CURDIR)/contracts/openapi:/specs:ro" -w /specs "$(REDOCLY_IMAGE)" \
 		lint instruction-api.yaml ingest.yaml
+	docker run --rm -v "$(CURDIR)/contracts/openapi:/specs:ro" -w /specs "$(REDOCLY_IMAGE)" \
+		bundle instruction-api.yaml --ext json \
+		| jq -esf .github/tests/instruction_api_problem_codes.jq >/dev/null
 
 # The local infrastructure can come up before the application images exist.
 COMPOSE_LOCAL = docker compose --project-directory deploy/compose
