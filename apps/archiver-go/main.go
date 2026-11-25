@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -119,6 +122,16 @@ func load() (settings, error) {
 		return cfg, err
 	}
 	if cfg.PipelineMode == "jetstream" {
+		natsURL, err := config.Lookup("NATS_URL", "")
+		if err != nil {
+			return cfg, err
+		}
+		if natsURL == "" {
+			return cfg, errors.New("NATS_URL is required")
+		}
+		if err := validateNATSURL(natsURL); err != nil {
+			return cfg, err
+		}
 		streams, err := config.Lookup("NATS_STREAMS", "")
 		if err != nil {
 			return cfg, err
@@ -133,6 +146,33 @@ func load() (settings, error) {
 				return cfg, fmt.Errorf("invalid NATS_STREAMS: duplicate stream %q", stream)
 			}
 			seen[stream] = struct{}{}
+		}
+	} else {
+		dbURL, err := config.Lookup("DATABASE_URL", "")
+		if err != nil {
+			return cfg, err
+		}
+		if dbURL == "" {
+			return cfg, errors.New("DATABASE_URL is required")
+		}
+		if _, err := pgxpool.ParseConfig(dbURL); err != nil {
+			return cfg, errors.New("invalid DATABASE_URL")
+		}
+		minimum, err := config.Lookup("DB_POOL_MIN", "1")
+		if err != nil {
+			return cfg, err
+		}
+		maximum, err := config.Lookup("DB_POOL_MAX", "10")
+		if err != nil {
+			return cfg, err
+		}
+		minConns, err := strconv.ParseUint(minimum, 10, 31)
+		if err != nil {
+			return cfg, errors.New("invalid DB_POOL_MIN")
+		}
+		maxConns, err := strconv.ParseUint(maximum, 10, 31)
+		if err != nil || maxConns == 0 || maxConns < minConns {
+			return cfg, errors.New("DB_POOL_MAX must be positive and at least DB_POOL_MIN")
 		}
 	}
 	const ackWaitName = "ACK_WAIT_SECONDS"
@@ -176,7 +216,7 @@ func (cfg settings) run(ctx context.Context) error {
 		defer cancel()
 		_ = stop(shutdown)
 	}()
-	if err := os.MkdirAll(cfg.stage, 0755); err != nil {
+	if err := prepareStage(cfg.stage); err != nil {
 		return err
 	}
 	client, err := s3x.New(ctx)
@@ -345,6 +385,43 @@ func s3Ready(ctx context.Context, client *s3.Client, bucket string) bool {
 	defer cancel()
 	_, err := client.HeadBucket(check, &s3.HeadBucketInput{Bucket: &bucket})
 	return err == nil
+}
+
+func validateNATSURL(raw string) error {
+	for part := range strings.SplitSeq(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return errors.New("invalid NATS_URL")
+		}
+		if !strings.Contains(part, "://") {
+			part = "nats://" + part
+		}
+		parsed, err := url.Parse(part)
+		if err != nil || parsed.Host == "" {
+			return errors.New("invalid NATS_URL")
+		}
+	}
+	return nil
+}
+
+func prepareStage(dir string) error {
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !entry.Type().IsRegular() || !strings.HasPrefix(name, "jammy-") || !strings.HasSuffix(name, ".parquet") {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
 }
 
 func pause(ctx context.Context, delay time.Duration) {

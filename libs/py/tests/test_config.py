@@ -11,6 +11,8 @@ from jammy_common.config import (
     parse_duration,
     parse_list,
     parse_size,
+    validate_database_url,
+    validate_nats_url,
 )
 
 ENV_CASES = Path(__file__).resolve().parents[3] / "contracts/testdata/env_cases.json"
@@ -169,3 +171,66 @@ def test_env_empty_file_variable_falls_back(monkeypatch):
     monkeypatch.setenv("X_FILE", "")
 
     assert env("X") == "configured"
+
+
+@pytest.mark.parametrize(
+    "dsn",
+    [
+        "postgresql://localhost/test",
+        "postgres://u:p@127.0.0.1:5432/db?sslmode=disable",
+        "host=localhost dbname=jammy",
+    ],
+)
+def test_validate_database_url_accepts_valid_dsn(dsn):
+    assert validate_database_url(dsn) == dsn
+
+
+@pytest.mark.parametrize(
+    "dsn",
+    [
+        "://bad",
+        "://bad-url",
+        "postgresql://",
+        "   ",
+        "not-a-dsn",
+        "postgresql://localhost:badport/test",
+        "postgresql://localhost:99999/test",
+    ],
+)
+def test_validate_database_url_rejects_invalid_dsn(dsn):
+    with pytest.raises(ConfigError, match="^invalid DATABASE_URL$"):
+        validate_database_url(dsn)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "nats://localhost:4222",
+        "nats://localhost",
+        "tls://nats.example.com:4222",
+        "ws://localhost:8080/nats",
+        "wss://[::1]:8443",
+        "nats://127.0.0.1:4222, tls://127.0.0.2:4222",
+    ],
+)
+def test_validate_nats_url_accepts_valid_url(url):
+    assert validate_nats_url(url) == url
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "://bad",
+        "http://localhost:4222",
+        "nats://",
+        "nats://:4222",
+        "localhost:4222",
+        "nats://localhost:bad",
+        "nats://localhost:4222,",
+        "nats://a:4222,ws://b:8080",
+        "nats://bad host:4222",
+    ],
+)
+def test_validate_nats_url_rejects_invalid_url(url):
+    with pytest.raises(ConfigError, match="^invalid NATS_URL$"):
+        validate_nats_url(url)

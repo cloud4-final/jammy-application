@@ -61,7 +61,7 @@ type preparedExport struct {
 }
 
 func (e *Exporter) ExportNext(ctx context.Context) (bool, error) {
-	var exported, flushedWhileOpen bool
+	var exported, flushed bool
 	var prepared *preparedExport
 	err := pgx.BeginFunc(ctx, e.Pool, func(tx pgx.Tx) error {
 		var lock bool
@@ -86,8 +86,13 @@ func (e *Exporter) ExportNext(ctx context.Context) (bool, error) {
 			e.index = index
 		}
 		name, err := oldest(ctx, tx)
-		if err != nil || name == "" {
+		if err != nil {
 			return err
+		}
+		if name == "" {
+			// Retry pending seals while this transaction still holds the exporter lock.
+			flushed = true
+			return e.flush(ctx, tx, "")
 		}
 		hour, err := time.Parse(partitionFormat, name)
 		if err != nil {
@@ -95,7 +100,7 @@ func (e *Exporter) ExportNext(ctx context.Context) (bool, error) {
 		}
 		if time.Now().Before(hour.Add(time.Hour)) {
 			// Retry pending seals while this transaction still holds the exporter lock.
-			flushedWhileOpen = true
+			flushed = true
 			return e.flush(ctx, tx, name)
 		}
 		relation := pgx.Identifier{"jammy", name}.Sanitize()
@@ -176,7 +181,7 @@ func (e *Exporter) ExportNext(ctx context.Context) (bool, error) {
 		e.index = nil
 		return false, err
 	}
-	if e.index == nil || flushedWhileOpen {
+	if e.index == nil || flushed {
 		return false, nil
 	}
 	if exported {

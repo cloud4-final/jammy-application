@@ -434,6 +434,36 @@ def test_processor_config_rejects_invalid_limits(monkeypatch):
                 ProcessorConfig.from_env()
 
 
+def test_processor_config_validates_database_and_nats_url(monkeypatch):
+    import pytest
+    from jammy_common.config import ConfigError
+    from processor.main import ProcessorConfig, main
+
+    monkeypatch.setenv("SITE_ID", "test")
+    monkeypatch.setenv("PIPELINE_MODE", "direct-db")
+    monkeypatch.setenv("DATABASE_URL", "://bad")
+    with pytest.raises(ConfigError, match="^invalid DATABASE_URL$"):
+        ProcessorConfig.from_env()
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == "invalid DATABASE_URL"
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://localhost/test")
+    assert ProcessorConfig.from_env().streams == ()
+
+    monkeypatch.setenv("PIPELINE_MODE", "jetstream")
+    monkeypatch.setenv("NATS_STREAMS", "raw-a1")
+    monkeypatch.setenv("NATS_URL", "http://localhost:4222")
+    with pytest.raises(ConfigError, match="^invalid NATS_URL$"):
+        ProcessorConfig.from_env()
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == "invalid NATS_URL"
+
+    monkeypatch.setenv("NATS_URL", "tls://localhost:4222")
+    assert ProcessorConfig.from_env().streams == ("raw-a1",)
+
+
 def test_processor_terminates_undecodable_batch_without_database():
     from types import SimpleNamespace
     from unittest.mock import AsyncMock, Mock

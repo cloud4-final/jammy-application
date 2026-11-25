@@ -9,6 +9,10 @@ from decimal import Decimal, InvalidOperation
 from functools import wraps
 from math import isfinite
 from pathlib import Path
+from urllib.parse import urlsplit
+
+import psycopg
+from psycopg.conninfo import conninfo_to_dict
 
 
 class ConfigError(ValueError):
@@ -161,6 +165,47 @@ def parse_bool(name: str, value: str) -> bool:
     if value not in {"true", "false"}:
         raise ConfigError(f"{name} must be true or false")
     return value == "true"
+
+
+_NATS_SCHEMES = frozenset({"nats", "tls", "ws", "wss"})
+_NATS_WS_SCHEMES = frozenset({"ws", "wss"})
+
+
+def validate_database_url(value: str) -> str:
+    """Validate a PostgreSQL DSN or conninfo string without connecting."""
+    try:
+        parsed = conninfo_to_dict(value)
+    except (psycopg.Error, ValueError):
+        raise ConfigError("invalid DATABASE_URL") from None
+    if not parsed:
+        raise ConfigError("invalid DATABASE_URL")
+    if port_spec := parsed.get("port"):
+        for raw_port in port_spec.split(","):
+            if not raw_port.isdigit() or not 1 <= int(raw_port) <= 65535:
+                raise ConfigError("invalid DATABASE_URL")
+    return value
+
+
+def validate_nats_url(value: str) -> str:
+    """Validate one or more comma-separated NATS endpoint URLs."""
+    schemes: set[str] = set()
+    for raw_part in value.split(","):
+        part = raw_part.strip()
+        if not part:
+            raise ConfigError("invalid NATS_URL")
+        try:
+            parsed = urlsplit(part)
+            host = parsed.hostname
+            _ = parsed.port
+        except ValueError:
+            raise ConfigError("invalid NATS_URL") from None
+        scheme = parsed.scheme.lower()
+        if scheme not in _NATS_SCHEMES or not host or any(ch.isspace() for ch in host):
+            raise ConfigError("invalid NATS_URL")
+        schemes.add(scheme)
+    if schemes & _NATS_WS_SCHEMES and schemes - _NATS_WS_SCHEMES:
+        raise ConfigError("invalid NATS_URL")
+    return value
 
 
 @dataclass(frozen=True, slots=True)
