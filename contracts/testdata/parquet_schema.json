@@ -1,0 +1,15 @@
+{
+  "compression": "zstd",
+  "uniform_columns": ["schema_version"],
+  "columns": [
+    {"name": "event_id", "type": "string"},
+    {"name": "routing_key", "type": "string"},
+    {"name": "profile", "type": "string"},
+    {"name": "schema_version", "type": "int32"},
+    {"name": "event_time", "type": "timestamp[ms, tz=UTC]"},
+    {"name": "received_at", "type": "timestamp[ms, tz=UTC]"},
+    {"name": "ingest_id", "type": "string"},
+    {"name": "primary_value", "type": "double"},
+    {"name": "payload", "type": "binary"}
+  ]
+}

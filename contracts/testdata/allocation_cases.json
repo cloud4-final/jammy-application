@@ -1,0 +1,120 @@
+[
+  {
+    "target_kw": "25.000",
+    "assets": [
+      {
+        "asset_id": "a",
+        "power_kw": "40.000"
+      },
+      {
+        "asset_id": "b",
+        "power_kw": "60.000"
+      }
+    ],
+    "expected": {
+      "a": "10.000",
+      "b": "15.000"
+    },
+    "expected_status": "dispatched"
+  },
+  {
+    "target_kw": "0.002",
+    "assets": [
+      {
+        "asset_id": "c",
+        "power_kw": "1.000"
+      },
+      {
+        "asset_id": "b",
+        "power_kw": "1.000"
+      },
+      {
+        "asset_id": "a",
+        "power_kw": "1.000"
+      },
+      {
+        "asset_id": "zero",
+        "power_kw": "0.000"
+      }
+    ],
+    "expected": {
+      "c": "0.000",
+      "b": "0.001",
+      "a": "0.001",
+      "zero": "0.000"
+    },
+    "expected_status": "dispatched"
+  },
+  {
+    "target_kw": "0.002",
+    "assets": [
+      {
+        "asset_id": "a",
+        "power_kw": "0.001"
+      },
+      {
+        "asset_id": "b",
+        "power_kw": "0.003"
+      }
+    ],
+    "expected": {
+      "a": "0.000",
+      "b": "0.002"
+    },
+    "expected_status": "dispatched"
+  },
+  {
+    "target_kw": "2.000",
+    "assets": [
+      {
+        "asset_id": "a",
+        "power_kw": "1.2349"
+      },
+      {
+        "asset_id": "b",
+        "power_kw": "0.7654"
+      }
+    ],
+    "expected": {
+      "a": "1.234",
+      "b": "0.765"
+    },
+    "expected_status": "partially_dispatched"
+  },
+  {
+    "target_kw": "5.000",
+    "assets": [
+      {
+        "asset_id": "a",
+        "power_kw": "2.000"
+      },
+      {
+        "asset_id": "b",
+        "power_kw": "3.000"
+      }
+    ],
+    "expected": {
+      "a": "2.000",
+      "b": "3.000"
+    },
+    "expected_status": "dispatched"
+  },
+  {
+    "target_kw": "1.000",
+    "assets": [
+      {
+        "asset_id": "zero",
+        "power_kw": "0.000"
+      },
+      {
+        "asset_id": "negative",
+        "power_kw": "-1.000"
+      }
+    ],
+    "expected": {
+      "zero": "0.000",
+      "negative": "0.000"
+    },
+    "expected_status": "partially_dispatched"
+  }
+]
