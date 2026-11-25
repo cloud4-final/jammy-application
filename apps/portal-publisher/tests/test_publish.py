@@ -4,12 +4,16 @@ import time
 from datetime import UTC, datetime, timedelta
 from itertools import pairwise
 from pathlib import Path
+from threading import Event
+from urllib.error import HTTPError
+from urllib.request import urlopen
 
 import psycopg
 import pytest
 from botocore.exceptions import ClientError
+from jammy_common.admin import AdminServer
 from jammy_common.config import CommonConfig, ConfigError
-from portal_publisher import main
+from portal_publisher import main, publish
 from portal_publisher.publish import Publisher
 from psycopg_pool import AsyncConnectionPool
 from testcontainers.core.container import DockerContainer
@@ -223,5 +227,192 @@ def test_s3_failure_counts_error_and_retries(postgres, minute):
         assert (
             store.objects["portal/team-1/latest.json"]["minute"] == minute.isoformat()
         )
+
+    asyncio.run(exercise())
+
+
+def test_publishes_with_s3_prefix(postgres, minute, monkeypatch):
+    async def exercise():
+        store, counter = ObjectStore(), Counter()
+        now = minute + timedelta(minutes=1, seconds=15)
+        async with AsyncConnectionPool(postgres, open=False) as pool:
+            publisher = Publisher(pool, store, "test-bucket", counter, s3_prefix="/site-a/")
+            assert await publisher.publish_once(now) == "ok"
+        suffix = minute.strftime("%Y%m%d%H%M")
+        assert set(store.objects) == {
+            "site-a/portal/team-1/latest.json",
+            f"site-a/portal/team-1/1m/{suffix}.json",
+            "site-a/portal/team-2/latest.json",
+            f"site-a/portal/team-2/1m/{suffix}.json",
+        }
+
+        store_empty_portal = ObjectStore()
+        async with AsyncConnectionPool(postgres, open=False) as pool:
+            publisher = Publisher(
+                pool, store_empty_portal, "test-bucket", Counter(), prefix="", s3_prefix="site-a"
+            )
+            assert await publisher.publish_once(now) == "ok"
+        assert set(store_empty_portal.objects) == {
+            "site-a/team-1/latest.json",
+            f"site-a/team-1/1m/{suffix}.json",
+            "site-a/team-2/latest.json",
+            f"site-a/team-2/1m/{suffix}.json",
+        }
+
+    asyncio.run(exercise())
+
+    monkeypatch.setenv("DATABASE_URL", postgres)
+    monkeypatch.setenv("S3_BUCKET", "test-bucket")
+    monkeypatch.setenv("S3_PREFIX", "/site-b/")
+
+    class Store:
+        def close(self):
+            pass
+
+    captured = {}
+
+    stop = asyncio.Event()
+
+    async def fake_publish(self, _now):
+        captured["prefix"] = self.prefix
+        stop.set()
+        return "ok"
+
+    monkeypatch.setattr(main.s3, "client", lambda _cfg: Store())
+    monkeypatch.setattr(Publisher, "publish_once", fake_publish)
+
+    async def serve_once():
+        cfg = CommonConfig("site-a", "portal", 8080, 0, "info", 25, "jetstream")
+        await main.serve(stop, cfg)
+
+    asyncio.run(serve_once())
+    assert captured["prefix"] == "site-b/portal"
+
+
+def test_s3_ready_bounds_stalled_bucket_check():
+    assert main.S3_READY_TIMEOUT_SECONDS > 0
+    release = Event()
+
+    class StalledStore:
+        def __init__(self):
+            self.stalled = True
+            self.buckets = []
+
+        def head_bucket(self, *, Bucket):
+            self.buckets.append(Bucket)
+            if self.stalled:
+                release.wait(5)
+            return {}
+
+    def get_status(port: int) -> int:
+        try:
+            with urlopen(f"http://127.0.0.1:{port}/readyz", timeout=1) as resp:
+                return resp.status
+        except HTTPError as error:
+            return error.code
+
+    async def exercise():
+        store = StalledStore()
+        admin = AdminServer(
+            0, {"s3": lambda: main.s3_ready(store, "test-bucket", timeout=0.05)}
+        )
+        await admin.start()
+        try:
+            async with asyncio.timeout(1):
+                assert await asyncio.to_thread(get_status, admin.port) == 503
+                store.stalled = False
+                release.set()
+                assert await asyncio.to_thread(get_status, admin.port) == 200
+        finally:
+            release.set()
+            await admin.close()
+        assert store.buckets == ["test-bucket", "test-bucket"]
+
+    asyncio.run(exercise())
+
+
+def test_s3_upload_timeout_counts_error_and_retries(monkeypatch):
+    assert publish.S3_UPLOAD_TIMEOUT_SECONDS > 0
+    monkeypatch.setattr(publish, "S3_UPLOAD_TIMEOUT_SECONDS", 0.05)
+    release = Event()
+
+    class FakeCursor:
+        def __init__(self, rows):
+            self._rows = rows
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return False
+
+        async def execute(self, sql, params):
+            self.params = params
+
+        async def fetchall(self):
+            return [dict(row) for row in self._rows]
+
+    class FakeConnection:
+        def __init__(self, rows):
+            self._rows = rows
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return False
+
+        def cursor(self, **_kwargs):
+            return FakeCursor(self._rows)
+
+    class FakePool:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def connection(self, **_kwargs):
+            return FakeConnection(self._rows)
+
+    class StallingStore(ObjectStore):
+        def __init__(self):
+            super().__init__()
+            self.stall_next = True
+
+        def put_object(self, *, Bucket, Key, Body, ContentType):
+            if self.stall_next:
+                release.wait(5)
+            super().put_object(Bucket=Bucket, Key=Key, Body=Body, ContentType=ContentType)
+
+    async def exercise():
+        minute = datetime(2026, 11, 23, 1, 0, tzinfo=UTC)
+        now = minute + timedelta(minutes=1, seconds=10)
+        rows = [
+            {
+                "tenant_id": "team-1",
+                "asset_id": "a",
+                "count": 2,
+                "avg_kw": 3,
+                "min_kw": 1,
+                "max_kw": 5,
+            }
+        ]
+        store, counter = StallingStore(), Counter()
+        publisher = Publisher(FakePool(rows), store, "test-bucket", counter)
+        try:
+            async with asyncio.timeout(1):
+                assert await publisher.publish_once(now) == "error"
+            assert publisher._retry_minute == minute
+            assert store.objects == {}
+
+            store.stall_next = False
+            release.set()
+            assert await publisher.publish_once(now + timedelta(seconds=20)) == "ok"
+            assert publisher._retry_minute is None
+            assert counter.results == ["error", "ok"]
+            assert (
+                store.objects["portal/team-1/latest.json"]["minute"]
+                == minute.isoformat()
+            )
+        finally:
+            release.set()
 
     asyncio.run(exercise())

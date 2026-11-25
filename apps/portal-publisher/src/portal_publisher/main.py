@@ -16,12 +16,24 @@ from jammy_common.config import (
 from .publish import Publisher
 
 SERVICE = "portal-publisher"
+S3_READY_TIMEOUT_SECONDS = 1
+
+
+async def s3_ready(store, bucket: str, *, timeout: float | None = None) -> bool:
+    deadline = S3_READY_TIMEOUT_SECONDS if timeout is None else timeout
+    try:
+        async with asyncio.timeout(deadline):
+            await asyncio.to_thread(store.head_bucket, Bucket=bucket)
+    except TimeoutError:
+        return False
+    return True
 
 
 async def serve(stop: asyncio.Event, cfg: CommonConfig) -> None:
     if not cfg.instance_id:
         raise ConfigError("INSTANCE_ID must not be empty")
     bucket = env("S3_BUCKET", required=True)
+    s3_prefix = s3.prefix()
     prefix = env("PORTAL_PREFIX", "portal")
     interval = env_int("PORTAL_INTERVAL_SECONDS", 60)
     if interval < 1:
@@ -36,18 +48,13 @@ async def serve(stop: asyncio.Event, cfg: CommonConfig) -> None:
         bucket,
         meter.create_counter("jammy_portal_publish"),
         prefix=prefix,
+        s3_prefix=s3_prefix,
     )
 
-    async def postgres_ready() -> bool:
-        async with pool.connection(timeout=1) as conn:
-            await conn.execute("SELECT 1")
-        return True
-
-    async def s3_ready() -> bool:
-        await asyncio.to_thread(store.head_bucket, Bucket=bucket)
-        return True
-
-    admin = AdminServer(cfg.admin_port, {"postgres": postgres_ready, "s3": s3_ready})
+    admin = AdminServer(
+        cfg.admin_port,
+        {"postgres": lambda: db.ping(pool), "s3": lambda: s3_ready(store, bucket)},
+    )
 
     async def watch_shutdown():
         await stop.wait()

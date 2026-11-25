@@ -11,6 +11,8 @@ B1 reads the Parquet objects enumerated by seal files under `raw/`. Dates and ho
 
 Each Parquet object has a sibling `<stem>.manifest.json`. A later export for a sealed hour uses the corresponding `raw-late/` key. The original seal and its row count stay fixed.
 
+When `S3_PREFIX` is non-empty, trim any leading and trailing `/` and prepend `<S3_PREFIX>/` to every object key written or read under `s3://<bucket>/` (`raw/`, `raw-late/`, `exports/direct-db/`, `.manifest.json`, `_SEALED-*.json`, and `portal/`). The bucket-relative `files` keys recorded inside `_SEALED-*.json`, `exports/direct-db/<partition_name>.json`, and `jammy.archive_exports.s3_key` include this prefix. When `S3_PREFIX` is empty (default), keys start directly at the root prefixes above.
+
 ## Object manifest
 
 | Field | Representation |

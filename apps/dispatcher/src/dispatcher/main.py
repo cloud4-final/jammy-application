@@ -94,12 +94,7 @@ async def serve(stop: asyncio.Event, cfg: CommonConfig) -> None:
     leader_gauge = meter.create_gauge("jammy_dispatcher_is_leader")
     lease_gauge = meter.create_gauge("jammy_dispatcher_lease_active")
 
-    async def postgres_ready() -> bool:
-        async with asyncio.timeout(1), pool.connection(timeout=1) as conn:
-            await conn.execute("SELECT 1")
-        return True
-
-    checks = {"postgres": postgres_ready, "lease": lease.ready}
+    checks = {"postgres": lambda: db.ping(pool), "lease": lease.ready}
     if sqs is not None:
         checks["sqs"] = sqs.ready
     admin = AdminServer(cfg.admin_port, checks)

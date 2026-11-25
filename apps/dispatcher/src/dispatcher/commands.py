@@ -9,7 +9,9 @@ from uuid import uuid4
 
 import httpx
 from botocore.exceptions import BotoCoreError, ClientError
+from opentelemetry import trace
 from opentelemetry.metrics import NoOpMeter
+from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 from psycopg.rows import dict_row
 
 from .allocate import allocate
@@ -43,6 +45,7 @@ class Dispatcher:
         self._state = LeaseState(False, 0)
         self._fenced = False
         self._publication_lock = asyncio.Lock()
+        self._propagator = TraceContextTextMapPropagator()
         meter = meter or NoOpMeter("dispatcher")
         self.commands = meter.create_counter("jammy_dispatcher_commands")
         self.duration = meter.create_histogram(
@@ -270,18 +273,33 @@ class Dispatcher:
             "epoch": epoch,
             "valid_until": valid_until.isoformat(),
         }
-        try:
-            async with asyncio.timeout(self.command_timeout):
-                response = await self.http.post(
-                    self.url, json=body, timeout=self.command_timeout
+        headers: dict[str, str] = {}
+        with trace.get_tracer("dispatcher").start_as_current_span(
+            "POST /v1/commands",
+            kind=trace.SpanKind.CLIENT,
+            attributes={"http.request.method": "POST", "url.full": self.url},
+        ) as span:
+            self._propagator.inject(headers)
+            try:
+                async with asyncio.timeout(self.command_timeout):
+                    response = await self.http.post(
+                        self.url,
+                        json=body,
+                        headers=headers,
+                        timeout=self.command_timeout,
+                    )
+                span.set_attribute("http.response.status_code", response.status_code)
+                if response.status_code >= 500:
+                    span.set_status(trace.StatusCode.ERROR)
+                result = {200: "acked", 409: "stale_epoch"}.get(
+                    response.status_code, "error"
                 )
-            result = {200: "acked", 409: "stale_epoch"}.get(
-                response.status_code, "error"
-            )
-        except TimeoutError, httpx.TimeoutException:
-            result = "timeout"
-        except httpx.RequestError:
-            result = "error"
+            except TimeoutError, httpx.TimeoutException:
+                span.set_status(trace.StatusCode.ERROR)
+                result = "timeout"
+            except httpx.RequestError:
+                span.set_status(trace.StatusCode.ERROR)
+                result = "error"
         self.commands.add(1, {"result": result})
 
         if not await self.leader.is_held() or self.leader.generation != generation:

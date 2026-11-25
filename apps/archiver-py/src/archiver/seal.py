@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from math import ceil
 
 from archiver.parquet_writer import manifest_key, timestamp
+from jammy_common.s3 import normalize_prefix
 
 HOUR = timedelta(hours=1)
 
@@ -13,8 +14,13 @@ def hour_start(stamp):
     return stamp.astimezone(UTC).replace(minute=0, second=0, microsecond=0)
 
 
-def hour_prefix(profile, stamp):
-    return f"raw/profile={profile}/dt={stamp:%Y-%m-%d}/hour={stamp:%H}/"
+def hour_prefix(profile, stamp, s3_prefix=""):
+    return f"{s3_prefix}raw/profile={profile}/dt={stamp:%Y-%m-%d}/hour={stamp:%H}/"
+
+
+def late_prefix(prefix, s3_prefix=""):
+    rel = prefix.removeprefix(s3_prefix)
+    return f"{s3_prefix}raw-late/{rel.removeprefix('raw/')}"
 
 
 def partition_hour(name):
@@ -30,9 +36,10 @@ def direct_eligible(hour, watermark, lateness):
 
 
 class Catalog:
-    def __init__(self, store, lateness) -> None:
+    def __init__(self, store, lateness, *, s3_prefix="") -> None:
         self.store = store
         self.lateness = lateness
+        self.s3_prefix = normalize_prefix(s3_prefix)
         self.files = defaultdict(dict)
         self.seals: set[str] = set()
         self.orphaned = defaultdict(set)
@@ -43,12 +50,18 @@ class Catalog:
         self.seals.clear()
         self.orphaned.clear()
         self.watermarks.clear()
-        for root in ("raw/", "raw-late/"):
+        raw_root = f"{self.s3_prefix}raw/"
+        late_root = f"{self.s3_prefix}raw-late/"
+        for root in (raw_root, late_root):
             keys = set(self.store.list(root))
             for key in keys:
                 prefix, name = key.rsplit("/", 1)
                 prefix += "/"
-                if name.startswith("_SEALED-") and name.endswith(".json"):
+                if (
+                    root == raw_root
+                    and name.startswith("_SEALED-")
+                    and name.endswith(".json")
+                ):
                     if name != "_SEALED-db.json":
                         seal = self.store.read_json(key)
                         self.advance(
@@ -85,7 +98,7 @@ class Catalog:
 
     def target(self, prefix, ingest_id):
         if f"{prefix}_SEALED-{ingest_id}.json" in self.seals:
-            return prefix.replace("raw/", "raw-late/", 1)
+            return late_prefix(prefix, self.s3_prefix)
         return prefix
 
     def has_object(self, prefix, key):
@@ -100,7 +113,7 @@ class Catalog:
         return any(first <= sequence <= last for first, last in ranges)
 
     def covered(self, prefix, ingest_id, stream, sequence, schema_version):
-        for target in (prefix, prefix.replace("raw/", "raw-late/", 1)):
+        for target in (prefix, late_prefix(prefix, self.s3_prefix)):
             for key, data in self.files.get(target, {}).items():
                 if (
                     data["source"] == "jetstream"
@@ -140,8 +153,9 @@ class Catalog:
 
     def seal(self, source, direct_watermark=None, *, ingest_ids=None):
         rule = direct_eligible if source == "direct-db" else jetstream_eligible
+        raw_root = f"{self.s3_prefix}raw/"
         for prefix, items in self.files.items():
-            if not prefix.startswith("raw/"):
+            if not prefix.startswith(raw_root):
                 continue
             matches = defaultdict(dict)
             for key, data in items.items():

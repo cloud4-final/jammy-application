@@ -5,7 +5,7 @@ import hashlib
 import logging
 
 from botocore.exceptions import BotoCoreError, ClientError
-from instruction_api.models import Instruction
+from jammy_common.instructions import Instruction
 from psycopg import Error
 from pydantic import ValidationError
 

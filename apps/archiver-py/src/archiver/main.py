@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
@@ -27,6 +28,7 @@ from jammy_common.config import (
 )
 from jammy_common.logging import setup as setup_logging
 from nats.errors import Error as NatsError
+from opentelemetry import trace
 
 LOGGER = logging.getLogger(__name__)
 RETRY_ERRORS = (
@@ -56,6 +58,7 @@ class ArchiveConfig:
     bandwidth: int
     ack_wait: int
     lateness: timedelta
+    s3_prefix: str = ""
 
     @classmethod
     def from_env(cls):
@@ -89,6 +92,7 @@ class ArchiveConfig:
             parse_size("ARCHIVE_MAX_UPLOAD_BPS", env("ARCHIVE_MAX_UPLOAD_BPS", "0")),
             positive_int("ACK_WAIT_SECONDS", flush_seconds * 3 + 60),
             timedelta(seconds=seconds),
+            s3.prefix(),
         )
 
 
@@ -96,25 +100,32 @@ class Archiver:
     def __init__(self, config, store, meter):
         self.config = config
         self.store = store
-        self.catalog = Catalog(store, config.lateness)
+        self.catalog = Catalog(
+            store, config.lateness, s3_prefix=getattr(config, "s3_prefix", "")
+        )
         self.restored = False
         self.client = None
         self.pool = None
         self.streams = []
         self.backlog = meter.create_gauge("jammy_archiver_unacked_messages")
+        self.backlog.set(0)
         self.pending = {}
 
     async def is_ready(self):
         if not self.restored:
             return False
-        await asyncio.to_thread(self.store.ready)
-        if self.config.streams:
-            return (
-                bool(self.streams)
-                and all(source.subscription is not None for source in self.streams)
-                and await nats.check_streams(self.client, self.config.streams)
-            )
-        return await db.ping(self.pool)
+        try:
+            async with asyncio.timeout(1):
+                await asyncio.to_thread(self.store.ready)
+                if self.config.streams:
+                    return (
+                        bool(self.streams)
+                        and all(source.subscription is not None for source in self.streams)
+                        and await nats.check_streams(self.client, self.config.streams)
+                    )
+                return await db.ping(self.pool)
+        except TimeoutError:
+            return False
 
     def observe(self, stream, pending):
         self.pending[stream] = pending
@@ -159,14 +170,29 @@ class Archiver:
                 await asyncio.sleep(1)
 
     async def export(self, stop):
-        source = DbArchive(self.pool, self.store, self.catalog)
+        source = DbArchive(
+            self.pool,
+            self.store,
+            self.catalog,
+            s3_prefix=getattr(self.config, "s3_prefix", ""),
+        )
+        tracer = trace.get_tracer("jammy.archiver")
         while not stop.is_set():
-            try:
-                if not await source.poll():
+            exported = False
+            with tracer.start_as_current_span("archive.export") as span:
+                try:
+                    exported = await source.poll()
+                except RETRY_ERRORS as error:
+                    span.record_exception(error)
+                    span.set_status(trace.StatusCode.ERROR)
+                    LOGGER.warning("Archive export will retry (%s)", type(error).__name__)
                     await asyncio.sleep(1)
-            except RETRY_ERRORS as error:
-                LOGGER.warning("Archive export will retry (%s)", type(error).__name__)
-                await asyncio.sleep(1)
+                    continue
+            if not exported:
+                with suppress(TimeoutError):
+                    await asyncio.wait_for(
+                        stop.wait(), timeout=self.config.flush_seconds
+                    )
 
     async def run(self, stop):
         cfg = self.config

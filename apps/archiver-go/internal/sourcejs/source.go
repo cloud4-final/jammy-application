@@ -16,15 +16,78 @@ import (
 	"github.com/cloud4-final/jammy-5th/apps/archiver-go/internal/seal"
 	"github.com/cloud4-final/jammy-5th/libs/go/codec"
 	"github.com/cloud4-final/jammy-5th/libs/go/gate"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
+var tracePropagator = propagation.TraceContext{}
+
+type headerCarrier nats.Header
+
+func (c headerCarrier) Get(key string) string {
+	if c == nil {
+		return ""
+	}
+	if value := nats.Header(c).Get(key); value != "" {
+		return value
+	}
+	for k, values := range c {
+		if strings.EqualFold(k, key) && len(values) > 0 {
+			return values[0]
+		}
+	}
+	return ""
+}
+
+func (c headerCarrier) Set(key, value string) { nats.Header(c).Set(key, value) }
+
+func (c headerCarrier) Keys() []string {
+	keys := make([]string, 0, len(c))
+	for k := range c {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// FlushTraceContext extracts W3C traceparent headers from NATS messages, using
+// the first valid span context as parent and attaching all distinct contexts as links.
+func FlushTraceContext(base context.Context, messages []jetstream.Msg) (context.Context, []trace.Link) {
+	parent := base
+	hasParent := false
+	type spanKey struct {
+		traceID trace.TraceID
+		spanID  trace.SpanID
+	}
+	var links []trace.Link
+	seen := make(map[spanKey]struct{})
+	for _, msg := range messages {
+		extracted := tracePropagator.Extract(base, headerCarrier(msg.Headers()))
+		sc := trace.SpanContextFromContext(extracted)
+		if !sc.IsValid() {
+			continue
+		}
+		if !hasParent {
+			parent = extracted
+			hasParent = true
+		}
+		k := spanKey{sc.TraceID(), sc.SpanID()}
+		if _, duplicate := seen[k]; !duplicate {
+			seen[k] = struct{}{}
+			links = append(links, trace.Link{SpanContext: sc})
+		}
+	}
+	return parent, links
+}
+
 type Archiver struct {
-	Archive  pq.Archive
-	index    *seal.Index
-	mu       sync.Mutex
-	Lateness time.Duration
-	Poison   func(context.Context)
+	Archive   pq.Archive
+	index     *seal.Index
+	mu        sync.Mutex
+	Lateness  time.Duration
+	KeyPrefix string
+	Poison    func(context.Context)
 }
 
 var errBatchID = errors.New("Nats-Msg-Id does not match batch_id")
@@ -101,7 +164,7 @@ func (a *Archiver) persist(ctx context.Context, deliveries []delivery) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.index == nil {
-		index, err := seal.Load(ctx, a.Archive.Objects, func(manifest pq.Manifest) bool { return manifest.Source == "jetstream" })
+		index, err := seal.LoadWithPrefix(ctx, a.Archive.Objects, a.KeyPrefix, func(manifest pq.Manifest) bool { return manifest.Source == "jetstream" })
 		if err != nil {
 			return err
 		}
@@ -113,7 +176,7 @@ func (a *Archiver) persist(ctx context.Context, deliveries []delivery) error {
 	for _, d := range deliveries {
 		ingesters[d.ingest] = struct{}{}
 		for _, row := range d.rows {
-			key := group{seal.Prefix(row.Profile, time.UnixMilli(row.EventTime)), d.ingest, d.stream, row.SchemaVersion}
+			key := group{seal.PrefixWith(a.KeyPrefix, row.Profile, time.UnixMilli(row.EventTime)), d.ingest, d.stream, row.SchemaVersion}
 			if _, ok := groups[key]; !ok {
 				order = append(order, key)
 			}

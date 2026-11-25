@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 
 from archiver.parquet_writer import ArchiveRow, timestamp
 from archiver.seal import HOUR, hour_prefix, hour_start, partition_hour
+from jammy_common.s3 import normalize_prefix
 from psycopg import sql
 from psycopg.errors import LockNotAvailable
 
@@ -24,10 +25,11 @@ class PreparedExport:
 
 
 class DbArchive:
-    def __init__(self, pool, store, catalog) -> None:
+    def __init__(self, pool, store, catalog, *, s3_prefix="") -> None:
         self.pool = pool
         self.store = store
         self.catalog = catalog
+        self.s3_prefix = normalize_prefix(s3_prefix)
         self.watermark = None
         self.pending = None
 
@@ -171,7 +173,7 @@ class DbArchive:
     async def _finalize(self, conn, table, prepared):
         name = prepared.partition
         total = prepared.status[-1]
-        key = f"exports/direct-db/{name}.json"
+        key = f"{self.s3_prefix}exports/direct-db/{name}.json"
         manifest = await asyncio.to_thread(
             self.store.put_json,
             key,
@@ -211,7 +213,7 @@ class DbArchive:
 
     async def _publish(self, stage, pending, group, partition, files):
         await asyncio.to_thread(stage.write, pending)
-        prefix = hour_prefix(*group)
+        prefix = hour_prefix(*group, s3_prefix=self.s3_prefix)
         target = self.catalog.target(prefix, "db")
         key = f"{target}db-{partition}.parquet"
         metadata = await asyncio.to_thread(

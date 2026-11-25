@@ -8,6 +8,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type fixtureMessage struct {
@@ -121,6 +122,45 @@ func (m *poisonMessage) Term() error {
 	}
 	m.terminated = true
 	return nil
+}
+
+type headerMessage struct {
+	fixtureMessage
+	headers nats.Header
+}
+
+func (m headerMessage) Headers() nats.Header { return m.headers }
+
+func TestFlushTraceContextExtractsTraceparentAndLinks(t *testing.T) {
+	first := headerMessage{headers: nats.Header{
+		"Traceparent": {"00-00000000000000000000000000000042-0000000000000023-01"},
+	}}
+	second := headerMessage{headers: nats.Header{
+		"traceparent": {"00-00000000000000000000000000000043-0000000000000024-01"},
+	}}
+	missing := headerMessage{}
+
+	parent, links := FlushTraceContext(t.Context(), []jetstream.Msg{missing, first, first, second})
+	sc := trace.SpanContextFromContext(parent)
+	wantTraceID, err := trace.TraceIDFromHex("00000000000000000000000000000042")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSpanID, err := trace.SpanIDFromHex("0000000000000023")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sc.IsValid() || sc.TraceID() != wantTraceID || sc.SpanID() != wantSpanID {
+		t.Fatalf("got parent span context %+v", sc)
+	}
+	if len(links) != 2 {
+		t.Fatalf("got %d links, want 2 deduplicated links", len(links))
+	}
+
+	emptyParent, emptyLinks := FlushTraceContext(t.Context(), []jetstream.Msg{missing})
+	if trace.SpanContextFromContext(emptyParent).IsValid() || len(emptyLinks) != 0 {
+		t.Fatalf("expected invalid span context and no links when traceparent is missing")
+	}
 }
 
 func TestFlushTerminatesUndecodableBatch(t *testing.T) {

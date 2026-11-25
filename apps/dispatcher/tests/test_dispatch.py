@@ -6,8 +6,10 @@ import sys
 import time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import httpx
@@ -22,6 +24,10 @@ from dispatcher.main import serve
 from dispatcher.sqs_drain import SQSDrain
 from jammy_common.admin import AdminServer
 from jammy_common.config import CommonConfig, ConfigError
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from psycopg_pool import AsyncConnectionPool
 from testcontainers.core.container import DockerContainer
 
@@ -495,3 +501,61 @@ def test_allocation_ignores_stale_state(dsn):
                 await leader.release()
 
     asyncio.run(exercise())
+
+
+def test_send_creates_client_span_and_injects_traceparent(monkeypatch):
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(trace, "get_tracer", provider.get_tracer)
+
+    seen_headers = []
+
+    def handler(request):
+        seen_headers.append(dict(request.headers))
+        return httpx.Response(200 if len(seen_headers) == 1 else 503)
+
+    class FakeLeader:
+        generation = 1
+
+        async def is_held(self):
+            return True
+
+        @asynccontextmanager
+        async def transaction(self):
+            yield AsyncMock()
+
+    async def exercise():
+        instruction = {
+            "instruction_id": str(uuid4()),
+            "valid_until": datetime.now(UTC) + timedelta(minutes=5),
+        }
+        command = {
+            "command_id": uuid4(),
+            "asset_id": "solar-1",
+            "reduction_kw": Decimal("12.500"),
+        }
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as client:
+            dispatcher = Dispatcher(
+                client, "http://plantsim.test", FakeLeader(), Lease.disabled()
+            )
+            assert await dispatcher._send(instruction, command, 1, 0)
+            assert await dispatcher._send(instruction, command, 1, 0)
+
+    asyncio.run(exercise())
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 2
+    ok_span, err_span = spans
+    assert ok_span.name == "POST /v1/commands"
+    assert ok_span.kind == trace.SpanKind.CLIENT
+    assert ok_span.attributes["http.request.method"] == "POST"
+    assert ok_span.attributes["url.full"] == "http://plantsim.test/v1/commands"
+    assert ok_span.attributes["http.response.status_code"] == 200
+    assert seen_headers[0]["traceparent"] == (
+        f"00-{ok_span.context.trace_id:032x}-{ok_span.context.span_id:016x}-"
+        f"{ok_span.context.trace_flags:02x}"
+    )
+    assert err_span.attributes["http.response.status_code"] == 503
+    assert err_span.status.status_code == trace.StatusCode.ERROR

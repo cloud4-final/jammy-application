@@ -10,12 +10,16 @@ import (
 
 	"github.com/cloud4-final/jammy-5th/apps/archiver-go/internal/pq"
 	"github.com/cloud4-final/jammy-5th/apps/archiver-go/internal/seal"
+	"github.com/cloud4-final/jammy-5th/libs/go/s3x"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const partitionFormat = "raw_events_2006010215"
+const (
+	partitionFormat   = "raw_events_2006010215"
+	advisoryLockQuery = `SELECT pg_try_advisory_xact_lock(hashtext('jammy'), hashtext('archive_exports'))`
+)
 
 type Manifest struct {
 	Partition  string   `json:"partition_name"`
@@ -25,11 +29,12 @@ type Manifest struct {
 }
 
 type Exporter struct {
-	Pool     *pgxpool.Pool
-	Archive  pq.Archive
-	Lateness time.Duration
-	index    *seal.Index
-	pending  *preparedExport
+	Pool      *pgxpool.Pool
+	Archive   pq.Archive
+	Lateness  time.Duration
+	KeyPrefix string
+	index     *seal.Index
+	pending   *preparedExport
 }
 
 type stageGroup struct {
@@ -60,7 +65,7 @@ func (e *Exporter) ExportNext(ctx context.Context) (bool, error) {
 	var prepared *preparedExport
 	err := pgx.BeginFunc(ctx, e.Pool, func(tx pgx.Tx) error {
 		var lock bool
-		if err := tx.QueryRow(ctx, `SELECT pg_try_advisory_xact_lock(hashtext('jammy.archive_exports'))`).Scan(&lock); err != nil || !lock {
+		if err := tx.QueryRow(ctx, advisoryLockQuery).Scan(&lock); err != nil || !lock {
 			return err
 		}
 		retry := e.pending
@@ -72,7 +77,7 @@ func (e *Exporter) ExportNext(ctx context.Context) (bool, error) {
 			if err != nil {
 				return err
 			}
-			index, err := seal.Load(ctx, e.Archive.Objects, func(m pq.Manifest) bool {
+			index, err := seal.LoadWithPrefix(ctx, e.Archive.Objects, e.KeyPrefix, func(m pq.Manifest) bool {
 				return m.Source == "direct-db" && m.Partition != nil && archived[*m.Partition]
 			})
 			if err != nil {
@@ -122,7 +127,7 @@ func (e *Exporter) ExportNext(ctx context.Context) (bool, error) {
 				return err
 			}
 		}
-		key := "exports/direct-db/" + name + ".json"
+		key := e.exportKey(name)
 		digest, err := pq.PutJSON(ctx, e.Archive.Objects, key, &prepared.part, func(existing Manifest) bool {
 			return existing.Partition == prepared.part.Partition && existing.Rows == prepared.part.Rows &&
 				slices.Equal(existing.Files, prepared.part.Files)
@@ -184,6 +189,10 @@ func (e *Exporter) ExportNext(ctx context.Context) (bool, error) {
 	return exported, e.flushCommitted(ctx)
 }
 
+func (e *Exporter) exportKey(partition string) string {
+	return s3x.NormalizePrefix(e.KeyPrefix) + "exports/direct-db/" + partition + ".json"
+}
+
 func (e *Exporter) prepare(ctx context.Context, tx pgx.Tx, name, relation string, current partitionStatus) (*preparedExport, error) {
 	groups, err := partGroups(ctx, tx, relation)
 	if err != nil {
@@ -195,7 +204,7 @@ func (e *Exporter) prepare(ctx context.Context, tx pgx.Tx, name, relation string
 	}
 	var archivedRows int64
 	for _, group := range groups {
-		key := e.index.Target(seal.Prefix(group.profile, group.hour)+"db-"+name+".parquet", "db")
+		key := e.index.Target(seal.PrefixWith(e.KeyPrefix, group.profile, group.hour)+"db-"+name+".parquet", "db")
 		ref, manifest, err := e.Archive.Write(ctx, key, streamRows(ctx, tx, relation, group), pq.Manifest{Source: "direct-db", Partition: &name})
 		if err != nil {
 			return nil, err
@@ -213,7 +222,7 @@ func (e *Exporter) prepare(ctx context.Context, tx pgx.Tx, name, relation string
 func (e *Exporter) flushCommitted(ctx context.Context) error {
 	return pgx.BeginFunc(ctx, e.Pool, func(tx pgx.Tx) error {
 		var lock bool
-		if err := tx.QueryRow(ctx, `SELECT pg_try_advisory_xact_lock(hashtext('jammy.archive_exports'))`).Scan(&lock); err != nil || !lock {
+		if err := tx.QueryRow(ctx, advisoryLockQuery).Scan(&lock); err != nil || !lock {
 			return err
 		}
 		pending, err := oldest(ctx, tx)
