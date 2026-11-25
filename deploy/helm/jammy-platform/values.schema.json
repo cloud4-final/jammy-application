@@ -38,6 +38,7 @@
           }
         },
         "otlpEndpoint": {"type": "string"},
+        "monitoringNamespace": {"type": "string", "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$", "maxLength": 63},
         "environment": {"type": "string", "minLength": 1}
       }
     },

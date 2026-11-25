@@ -1,6 +1,6 @@
 # Plantsim
 
-Plantsim receives `POST /v1/commands` with the [dispatcher command fields](../../docs/design/specs/2026-11-23-backend-platform-design.md#54-명령--plantsim). It returns `200 {"status":"acked"}` and records the command's epoch for the asset. An epoch below the highest acknowledged epoch for that asset returns `409 {"status":"stale_epoch"}`. A repeated command ID returns its first result, even if the asset has since acknowledged a newer epoch. Epochs and command results reset when the process restarts.
+Plantsim receives `POST /v1/commands` with the JSON fields `command_id`, `instruction_id`, `asset_id`, `reduction_kw`, `generation`, `epoch`, and `valid_until`. It returns `200 {"status":"acked"}` and records the command's epoch for the asset. An epoch below the highest acknowledged epoch for that asset returns `409 {"status":"stale_epoch"}`. A repeated command ID returns its first result, even if the asset has since acknowledged a newer epoch. Epochs and command results reset when the process restarts.
 
 ```sh
 SITE_ID=jammy-a go run ./tools/plantsim

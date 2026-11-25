@@ -37,25 +37,10 @@ class DbArchive:
         now_hour = hour_start(datetime.now(UTC))
         async with self.pool.connection(timeout=2) as conn:
             # Serialize archive jobs so two instances cannot seal or drop the same partition.
-            lock = await conn.execute(
-                "SELECT pg_try_advisory_xact_lock(hashtext('jammy'), hashtext('archive_exports'))"
-            )
-            if not (await lock.fetchone())[0]:
+            if not await self._try_export_lock(conn):
                 return False
             retry, self.pending = self.pending, None
-            result = await conn.execute(
-                """SELECT child.relname FROM pg_inherits inheritance
-                   JOIN pg_class child ON child.oid = inheritance.inhrelid
-                   WHERE inheritance.inhparent = 'jammy.raw_events'::regclass
-                   ORDER BY child.relname"""
-            )
-            names = [
-                name
-                for (name,) in await result.fetchall()
-                if PARTITION.fullmatch(name)
-                and name < now_hour.strftime("raw_events_%Y%m%d%H")
-            ]
-            name = names[0] if names else None
+            name = await self._oldest_closed(conn, now_hour)
             await self._seal_exported(conn, name)
             if name is None:
                 return False
@@ -63,7 +48,34 @@ class DbArchive:
             current = await self._partition_status(conn, table)
             if await self._has_unprocessed(conn, current):
                 return False
-            return await self._archive(conn, name, table, retry, current=current)
+            exported = await self._archive(conn, name, table, retry, current=current)
+        if exported:
+            async with self.pool.connection(timeout=2) as conn:
+                if await self._try_export_lock(conn):
+                    name = await self._oldest_closed(conn, now_hour)
+                    await self._seal_exported(conn, name)
+        return exported
+
+    @staticmethod
+    async def _try_export_lock(conn):
+        lock = await conn.execute(
+            "SELECT pg_try_advisory_xact_lock(hashtext('jammy'), hashtext('archive_exports'))"
+        )
+        return (await lock.fetchone())[0]
+
+    @staticmethod
+    async def _oldest_closed(conn, now_hour):
+        result = await conn.execute(
+            """SELECT child.relname FROM pg_inherits inheritance
+               JOIN pg_class child ON child.oid = inheritance.inhrelid
+               WHERE inheritance.inhparent = 'jammy.raw_events'::regclass
+               ORDER BY child.relname"""
+        )
+        cutoff = now_hour.strftime("raw_events_%Y%m%d%H")
+        for (name,) in await result.fetchall():
+            if PARTITION.fullmatch(name) and name < cutoff:
+                return name
+        return None
 
     async def _seal_exported(self, conn, oldest_unexported):
         result = await conn.execute(

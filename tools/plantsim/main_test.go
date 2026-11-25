@@ -14,6 +14,11 @@ import (
 
 	"github.com/cloud4-final/jammy-5th/libs/go/config"
 	"github.com/cloud4-final/jammy-5th/libs/go/obs"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func TestLoadRejectsEmptyInstanceID(t *testing.T) {
@@ -105,6 +110,48 @@ func TestMetricsLabels(t *testing.T) {
 	}
 	if strings.Contains(body, "asset-1") {
 		t.Fatal("/metrics exposed an asset ID")
+	}
+}
+
+func TestCommandContinuesDispatcherTrace(t *testing.T) {
+	sim := testSimulator(t, 0, 1)
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		if err := provider.Shutdown(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+
+	req := commandRequest("asset-1", 5)
+	req.Header.Set("traceparent", "00-00000000000000000000000000000042-0000000000000023-01")
+	resp := httptest.NewRecorder()
+	sim.command(resp, req)
+	if resp.Code != http.StatusServiceUnavailable {
+		t.Fatalf("HTTP status = %d, want 503", resp.Code)
+	}
+	spans := recorder.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("got %d spans, want 1", len(spans))
+	}
+	span := spans[0]
+	if span.Name() != "POST /v1/commands" || span.SpanKind() != trace.SpanKindServer {
+		t.Fatalf("unexpected name %q or kind %v", span.Name(), span.SpanKind())
+	}
+	if span.Parent().SpanID().String() != "0000000000000023" ||
+		span.SpanContext().TraceID().String() != "00000000000000000000000000000042" {
+		t.Fatalf("unexpected parent %v or span context %v", span.Parent(), span.SpanContext())
+	}
+	attrs := make(map[string]any)
+	for _, attr := range span.Attributes() {
+		attrs[string(attr.Key)] = attr.Value.AsInterface()
+	}
+	if attrs["http.request.method"] != "POST" || attrs["http.route"] != "/v1/commands" ||
+		attrs["http.response.status_code"] != int64(503) || span.Status().Code != codes.Error {
+		t.Fatalf("unexpected attributes %v or status %v", attrs, span.Status())
 	}
 }
 

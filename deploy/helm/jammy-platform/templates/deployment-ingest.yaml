@@ -1,4 +1,7 @@
 {{- if .Values.ingest.enabled }}
+  {{- if and (eq .Values.global.pipelineMode "jetstream") (ne (int .Values.ingest.replicas) 1) }}
+    {{- fail "ingest.replicas must be 1 in jetstream mode" }}
+  {{- end }}
   {{- $names := dict }}
   {{- $streams := dict }}
   {{- range .Values.ingest.instances }}

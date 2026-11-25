@@ -29,6 +29,7 @@ from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapProp
 from psycopg_pool import AsyncConnectionPool
 from pydantic import ValidationError
 from starlette.exceptions import HTTPException
+from starlette.requests import ClientDisconnect
 
 from . import repo
 from .hmac_auth import HMACAuth
@@ -67,11 +68,17 @@ def problem(code: str, *, status: int | None = None) -> JSONResponse:
 
 
 def create_app(
-    pool: AsyncConnectionPool, auth: HMACAuth, meter: Meter, *, site_id: str | None = None,
+    pool: AsyncConnectionPool,
+    auth: HMACAuth,
+    meter: Meter,
+    *,
+    site_id: str | None = None,
+    max_body: int | None = None,
 ) -> FastAPI:
     if site_id is None:
         site_id = env("SITE_ID")
-    max_body = positive_size("INSTRUCTION_MAX_BODY_BYTES", "65536")
+    if max_body is None:
+        max_body = positive_size("INSTRUCTION_MAX_BODY_BYTES", "65536")
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     requests = meter.create_counter("jammy_instruction_requests")
     duration = meter.create_histogram("http.server.request.duration", unit="s")
@@ -94,7 +101,7 @@ def create_app(
                 logger.error("Instruction request failed (%s)", type(error).__name__)
                 response = problem("unavailable", status=500)
             span.set_attribute("http.request.method", request.method)
-            if route := getattr(request.scope.get("route"), "path", None):
+            if route := getattr(request.scope.get("route"), "path_format", None):
                 span.update_name(f"{request.method} {route}")
                 span.set_attribute("http.route", route)
             span.set_attribute("http.response.status_code", response.status_code)
@@ -108,15 +115,20 @@ def create_app(
             requests.add(1, {"result": result})
         duration.record(monotonic() - started, {
             "http_request_method": request.method,
-            "http_route": getattr(request.scope.get("route"), "path", "unmatched"),
+            "http_route": route or "unmatched",
             "http_response_status_code": status,
         })
         return response
 
     @app.exception_handler(HTTPException)
     async def http_problem(request, error):
-        return problem("not_found" if error.status_code == 404 else "bad_request",
-                       status=error.status_code)
+        response = problem(
+            "not_found" if error.status_code == 404 else "bad_request",
+            status=error.status_code,
+        )
+        if error.headers:
+            response.headers.update(error.headers)
+        return response
 
     async def authenticated_body(request: Request) -> bytearray | JSONResponse:
         signed = auth.validate_headers(request)
@@ -124,10 +136,13 @@ def create_app(
             return problem(signed)
 
         body = bytearray()
-        async for chunk in request.stream():
-            if len(chunk) > max_body - len(body):
-                return problem("payload_too_large")
-            body.extend(chunk)
+        try:
+            async for chunk in request.stream():
+                if len(chunk) > max_body - len(body):
+                    return problem("payload_too_large")
+                body.extend(chunk)
+        except ClientDisconnect:
+            return problem("bad_request")
         if not signed.verify(request, body):
             return problem("bad_signature")
         return body
@@ -140,6 +155,9 @@ def create_app(
         try:
             instruction = Instruction.model_validate_json(body)
         except ValidationError:
+            return problem("invalid_body")
+        if "\0" in instruction.instruction_id:
+            # PostgreSQL text cannot store a NUL character.
             return problem("invalid_body")
         lease_epoch = None
         if (header := request.headers.get("X-Jammy-Lease-Epoch")) is not None:
@@ -156,11 +174,13 @@ def create_app(
             return problem("conflict")
         return JSONResponse(jsonable_encoder(receipt), status_code=202 if created else 200)
 
-    @app.get("/v1/instructions/{id}")
+    @app.get("/v1/instructions/{id:path}")
     async def get_instruction(id: str, request: Request):
         body = await authenticated_body(request)
         if isinstance(body, JSONResponse):
             return body
+        if "\0" in id:
+            return problem("not_found")
         instruction = await repo.detail(pool, id)
         if instruction is None:
             return problem("not_found")
@@ -181,11 +201,12 @@ class _PublicServer(uvicorn.Server):
 async def serve(stop: asyncio.Event, cfg: CommonConfig, auth: HMACAuth) -> None:
     if not cfg.instance_id:
         raise ConfigError("INSTANCE_ID must not be empty")
+    max_body = positive_size("INSTRUCTION_MAX_BODY_BYTES", "65536")
     logging.setup(SERVICE, cfg)
     meter = obs.setup(SERVICE, cfg)
     pool = await db.pool(cfg, workers=1)
 
-    app = create_app(pool, auth, meter, site_id=cfg.site_id)
+    app = create_app(pool, auth, meter, site_id=cfg.site_id, max_body=max_body)
     public = _PublicServer(uvicorn.Config(
         app,
         host="0.0.0.0",

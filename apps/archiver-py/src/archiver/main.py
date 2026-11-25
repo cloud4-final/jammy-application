@@ -11,7 +11,7 @@ import psycopg
 from archiver.export_db import DbArchive
 from archiver.parquet_writer import ObjectStore
 from archiver.seal import Catalog
-from archiver.source_jetstream import BatchIdMismatch, JetStreamArchive
+from archiver.source_jetstream import JetStreamArchive
 from boto3.exceptions import S3UploadFailedError
 from botocore.exceptions import BotoCoreError, ClientError
 from jammy_common import db, lifecycle, nats, obs, s3
@@ -33,6 +33,7 @@ from nats.errors import Error as NatsError
 from opentelemetry import trace
 
 LOGGER = logging.getLogger(__name__)
+MAX_DURATION_SECONDS = (2**63 - 1) // 10**9  # Go time.Duration is signed nanoseconds.
 RETRY_ERRORS = (
     BotoCoreError,
     ClientError,
@@ -40,10 +41,6 @@ RETRY_ERRORS = (
     NatsError,
     psycopg.Error,
     OSError,
-    TimeoutError,
-    ValueError,
-    KeyError,
-    OverflowError,
 )
 
 
@@ -79,6 +76,13 @@ class ArchiveConfig:
         if not flush_bytes:
             raise ConfigError("ARCHIVE_FLUSH_BYTES must be positive")
         flush_seconds = positive_int("ARCHIVE_FLUSH_SECONDS", 10)
+        if flush_seconds > MAX_DURATION_SECONDS:
+            raise ConfigError("ARCHIVE_FLUSH_SECONDS is too large")
+        ack_wait = positive_int("ACK_WAIT_SECONDS", flush_seconds * 3 + 60)
+        if ack_wait > MAX_DURATION_SECONDS:
+            raise ConfigError("ACK_WAIT_SECONDS is too large")
+        if seconds > MAX_DURATION_SECONDS:
+            raise ConfigError("SEAL_LATENESS is too large")
         level = positive_int("ARCHIVE_ZSTD_LEVEL", 1)
         if level > 22:
             raise ConfigError("ARCHIVE_ZSTD_LEVEL must be in 1..22")
@@ -92,7 +96,7 @@ class ArchiveConfig:
             flush_bytes,
             level,
             parse_size("ARCHIVE_MAX_UPLOAD_BPS", env("ARCHIVE_MAX_UPLOAD_BPS", "0")),
-            positive_int("ACK_WAIT_SECONDS", flush_seconds * 3 + 60),
+            ack_wait,
             timedelta(seconds=seconds),
             s3.prefix(),
         )
@@ -161,10 +165,8 @@ class Archiver:
                 await asyncio.sleep(1)
         while True:
             try:
-                await source.flush()
+                await source.drain()
                 return
-            except BatchIdMismatch:
-                raise
             except RETRY_ERRORS as error:
                 LOGGER.warning(
                     "Shutdown archive flush will retry (%s)", type(error).__name__
@@ -181,6 +183,7 @@ class Archiver:
         tracer = trace.get_tracer("jammy.archiver")
         while not stop.is_set():
             exported = False
+            retry = False
             with tracer.start_as_current_span("archive.export") as span:
                 try:
                     exported = await source.poll()
@@ -188,9 +191,10 @@ class Archiver:
                     span.record_exception(error)
                     span.set_status(trace.StatusCode.ERROR)
                     LOGGER.warning("Archive export will retry (%s)", type(error).__name__)
-                    await asyncio.sleep(1)
-                    continue
-            if not exported:
+                    retry = True
+            if retry:
+                await asyncio.sleep(1)
+            elif not exported:
                 with suppress(TimeoutError):
                     await asyncio.wait_for(
                         stop.wait(), timeout=self.config.flush_seconds

@@ -22,8 +22,12 @@ import (
 	"github.com/cloud4-final/jammy-5th/libs/go/lifecycle"
 	"github.com/cloud4-final/jammy-5th/libs/go/logx"
 	"github.com/cloud4-final/jammy-5th/libs/go/obs"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type command struct {
@@ -51,7 +55,10 @@ type simulator struct {
 	duration  metric.Float64Histogram
 }
 
-const service = "plantsim"
+const (
+	service      = "plantsim"
+	commandRoute = "/v1/commands"
+)
 
 func newSimulator(delay time.Duration, failRatio float64, meter metric.Meter) (*simulator, error) {
 	commands, err := meter.Int64Counter("jammy_plantsim_commands", metric.WithDescription("Command outcomes."))
@@ -74,13 +81,20 @@ func newSimulator(delay time.Duration, failRatio float64, meter metric.Meter) (*
 
 func (s *simulator) command(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
+	method := attribute.String("http.request.method", http.MethodPost)
+	route := attribute.String("http.route", commandRoute)
+	ctx := propagation.TraceContext{}.Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+	ctx, span := otel.Tracer(service).Start(ctx, "POST "+commandRoute,
+		trace.WithSpanKind(trace.SpanKindServer), trace.WithAttributes(method, route))
+	defer span.End()
 	respond := func(code int, status string) {
+		statusCode := attribute.Int("http.response.status_code", code)
+		span.SetAttributes(statusCode)
+		if code >= http.StatusInternalServerError {
+			span.SetStatus(codes.Error, "")
+		}
 		writeStatus(w, code, status)
-		s.duration.Record(r.Context(), time.Since(start).Seconds(), metric.WithAttributes(
-			attribute.String("http.request.method", http.MethodPost),
-			attribute.String("http.route", "/v1/commands"),
-			attribute.Int("http.response.status_code", code),
-		))
+		s.duration.Record(ctx, time.Since(start).Seconds(), metric.WithAttributes(method, route, statusCode))
 	}
 	var c command
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
@@ -95,13 +109,13 @@ func (s *simulator) command(w http.ResponseWriter, r *http.Request) {
 		defer timer.Stop()
 		select {
 		case <-timer.C:
-		case <-r.Context().Done():
+		case <-ctx.Done():
 			return
 		}
 	}
 
 	s.mu.Lock()
-	if r.Context().Err() != nil {
+	if ctx.Err() != nil {
 		s.mu.Unlock()
 		return
 	}
@@ -119,7 +133,7 @@ func (s *simulator) command(w http.ResponseWriter, r *http.Request) {
 		s.outcomes[c.CommandID] = result
 	}
 	s.mu.Unlock()
-	s.commands.Add(r.Context(), 1, metric.WithAttributes(attribute.String("result", result.status)))
+	s.commands.Add(ctx, 1, metric.WithAttributes(attribute.String("result", result.status)))
 	respond(result.code, result.status)
 }
 
@@ -189,7 +203,7 @@ func (cfg settings) run(ctx context.Context) error {
 		return err
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /v1/commands", sim.command)
+	mux.HandleFunc("POST "+commandRoute, sim.command)
 	public := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	listener, err := net.Listen("tcp", ":"+strconv.Itoa(cfg.HTTPPort))
 	if err != nil {

@@ -331,9 +331,9 @@ def assert_parquet_matches_contract(data: bytes) -> pq.pa.Table:
 
 
 def find_service_container(service: str, cfg: E2EConfig) -> str:
-    """Locate the running/stopped container ID for a compose service."""
-    if cfg.compose_file.is_file():
-        cmd = [
+    """Locate a running or stopped service container in the current Compose project."""
+    res = subprocess.run(
+        [
             "docker",
             "compose",
             "-f",
@@ -343,27 +343,16 @@ def find_service_container(service: str, cfg: E2EConfig) -> str:
             "ps",
             "-aq",
             service,
-        ]
-        res = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        ids = [line.strip() for line in res.stdout.splitlines() if line.strip()]
-        if ids:
-            return ids[0]
-
-    res = subprocess.run(
-        [
-            "docker",
-            "ps",
-            "-aq",
-            "--filter",
-            f"label=com.docker.compose.service={service}",
         ],
         capture_output=True,
         text=True,
         check=True,
     )
     ids = [line.strip() for line in res.stdout.splitlines() if line.strip()]
-    if not ids:
-        raise RuntimeError(f"could not find container for service {service!r}")
+    if len(ids) != 1:
+        raise RuntimeError(
+            f"expected one container for Compose service {service!r}, found {len(ids)}"
+        )
     return ids[0]
 
 

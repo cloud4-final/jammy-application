@@ -3,8 +3,10 @@ import json
 import re
 import socket
 import time
+from collections import deque
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
+from urllib.parse import quote
 from uuid import uuid4
 
 import httpx
@@ -94,6 +96,58 @@ def problem(response, status, code):
     assert set(response.json()) == {"type", "title", "status", "detail"}
     assert response.json()["type"] == f"https://jammy.dev/problems/{code}"
     assert response.json()["status"] == status
+
+
+@pytest.mark.parametrize(
+    ("raw_path", "request_messages", "status", "code"),
+    [
+        (PATH.encode(), [{"type": "http.disconnect"}], 400, "bad_request"),
+        (
+            PATH.encode() + b"\xff",
+            [{"type": "http.request", "body": b"", "more_body": False}],
+            401,
+            "bad_signature",
+        ),
+    ],
+)
+def test_invalid_request_transport_returns_client_problem(raw_path, request_messages, status, code):
+    async def exercise():
+        pool = MagicMock()
+        app = create_app(pool, HMACAuth({"k": KEY}, 300), NoOpMeter("test"), site_id="a")
+        timestamp = int(time.time())
+        scope = {
+            "type": "http",
+            "asgi": {"version": "3.0", "spec_version": "2.4"},
+            "method": "POST",
+            "path": PATH,
+            "raw_path": raw_path,
+            "scheme": "http",
+            "query_string": b"",
+            "headers": [
+                (b"x-jammy-key-id", b"k"),
+                (b"x-jammy-timestamp", str(timestamp).encode()),
+                (b"x-jammy-signature", sign(KEY, timestamp, "POST", PATH, b"").encode()),
+            ],
+        }
+        incoming = deque(request_messages)
+        outgoing = []
+
+        async def receive():
+            return incoming.popleft()
+
+        async def respond(message):
+            outgoing.append(message)
+
+        await app(scope, receive, respond)
+        response = httpx.Response(
+            outgoing[0]["status"],
+            headers=outgoing[0]["headers"],
+            content=b"".join(message.get("body", b"") for message in outgoing[1:]),
+        )
+        problem(response, status, code)
+        pool.connection.assert_not_called()
+
+    asyncio.run(exercise())
 
 
 def test_post_uses_optional_lease_epoch_without_changing_signature():
@@ -298,6 +352,16 @@ def test_instruction_api_rejects_empty_instance_id(monkeypatch):
     asyncio.run(exercise())
 
 
+def test_instruction_api_validates_body_limit_before_opening_pool(monkeypatch):
+    monkeypatch.setenv("INSTRUCTION_MAX_BODY_BYTES", "0")
+    pool_factory = AsyncMock()
+    monkeypatch.setattr(db, "pool", pool_factory)
+    cfg = CommonConfig("site-a", "api", 0, 0, "info", 25, "jetstream")
+    with pytest.raises(ConfigError, match="INSTRUCTION_MAX_BODY_BYTES"):
+        asyncio.run(serve(asyncio.Event(), cfg, HMACAuth({"k": KEY}, 300)))
+    pool_factory.assert_not_awaited()
+
+
 def test_instruction_api_uses_full_pool_in_its_single_worker(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql://127.0.0.1:1/test")
     monkeypatch.setenv("DB_POOL_MIN", "0")
@@ -436,6 +500,52 @@ def test_invalid_body_422(dsn, change):
         problem(await send(client, body(**change)), 422, "invalid_body")
 
     with_api(dsn, exercise)
+
+
+@pytest.mark.parametrize("instruction_id", ["control/site-a", ""])
+def test_get_supports_ids_that_escape_a_url_segment(monkeypatch, instruction_id):
+    async def exercise():
+        detail = AsyncMock(return_value={"instruction_id": instruction_id})
+        monkeypatch.setattr(api_main.repo, "detail", detail)
+        pool = MagicMock()
+        app = create_app(pool, HMACAuth({"k": KEY}, 300), NoOpMeter("test"), site_id="a")
+        path = f"{PATH}/{quote(instruction_id, safe='')}"
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            response = await send(client, method="GET", path=path)
+        assert response.status_code == 200
+        assert response.json()["instruction_id"] == instruction_id
+        detail.assert_awaited_once_with(pool, instruction_id)
+
+    asyncio.run(exercise())
+
+
+def test_nul_instruction_id_is_rejected_without_contacting_postgres():
+    async def exercise():
+        pool = MagicMock()
+        app = create_app(pool, HMACAuth({"k": KEY}, 300), NoOpMeter("test"), site_id="a")
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            problem(await send(client, body(instruction_id="bad\0id")), 422, "invalid_body")
+            problem(await send(client, method="GET", path=f"{PATH}/bad%00id"), 404, "not_found")
+        pool.connection.assert_not_called()
+
+    asyncio.run(exercise())
+
+
+def test_method_not_allowed_keeps_allow_header():
+    async def exercise():
+        app = create_app(MagicMock(), HMACAuth({"k": KEY}, 300), NoOpMeter("test"), site_id="a")
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            response = await client.put(PATH)
+        problem(response, 405, "bad_request")
+        assert response.headers["allow"] == "POST"
+
+    asyncio.run(exercise())
 
 
 def test_get_status_returns_commands(dsn):

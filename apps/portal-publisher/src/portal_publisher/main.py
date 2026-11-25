@@ -13,17 +13,18 @@ from jammy_common.config import (
     env_int,
 )
 
-from .publish import Publisher
+from .publish import Publisher, S3Operation, last_closed_minute
 
 SERVICE = "portal-publisher"
 S3_READY_TIMEOUT_SECONDS = 1
 
 
-async def s3_ready(store, bucket: str, *, timeout: float | None = None) -> bool:
+async def s3_ready(
+    operation: S3Operation, store, bucket: str, *, timeout: float | None = None
+) -> bool:
     deadline = S3_READY_TIMEOUT_SECONDS if timeout is None else timeout
     try:
-        async with asyncio.timeout(deadline):
-            await asyncio.to_thread(store.head_bucket, Bucket=bucket)
+        await operation.run(store.head_bucket, deadline, Bucket=bucket)
     except TimeoutError:
         return False
     return True
@@ -56,9 +57,13 @@ async def serve(stop: asyncio.Event, cfg: CommonConfig) -> None:
         s3_prefix=s3_prefix,
     )
 
+    ready_operation = S3Operation()
     admin = AdminServer(
         cfg.admin_port,
-        {"postgres": lambda: db.ping(pool), "s3": lambda: s3_ready(store, bucket)},
+        {
+            "postgres": lambda: db.ping(pool),
+            "s3": lambda: s3_ready(ready_operation, store, bucket),
+        },
     )
 
     async def watch_shutdown():
@@ -72,11 +77,15 @@ async def serve(stop: asyncio.Event, cfg: CommonConfig) -> None:
             while not stop.is_set():
                 started = datetime.now(UTC)
                 result = await publisher.publish_once(started)
-                delay = (
-                    1
-                    if result == "error"
-                    else _next_tick_delay(started, datetime.now(UTC), interval)
-                )
+                finished = datetime.now(UTC)
+                if result == "error":
+                    delay = 1
+                elif publisher.last_minute is not None and publisher.last_minute < last_closed_minute(
+                    finished
+                ):
+                    delay = 0
+                else:
+                    delay = _next_tick_delay(started, finished, interval)
                 try:
                     await asyncio.wait_for(stop.wait(), timeout=delay)
                 except TimeoutError:

@@ -59,7 +59,7 @@ func TestRunFlushesAtByteOrTimeThreshold(t *testing.T) {
 			consumer := &fixtureConsumer{message: fixtureMessage{body: []byte("abc")}}
 			started := time.Now()
 			flushed := false
-			err := Run(ctx, consumer, test.limit, test.interval, time.Second, func(_ context.Context, messages []jetstream.Msg) error {
+			err := Run(ctx, consumer, test.limit, test.interval, time.Second, 0, func(_ context.Context, messages []jetstream.Msg) error {
 				if len(messages) != 1 || time.Since(started) < test.minimum {
 					t.Fatalf("unexpected flush of %d messages", len(messages))
 				}
@@ -83,7 +83,7 @@ func TestRunRetriesFailedFlushBeforeFetching(t *testing.T) {
 	consumer := &fixtureConsumer{message: fixtureMessage{body: []byte("abc")}}
 	var failures int
 	var first time.Time
-	err := Run(ctx, consumer, 3, time.Hour, time.Second, func(_ context.Context, messages []jetstream.Msg) error {
+	err := Run(ctx, consumer, 3, time.Hour, time.Second, 0, func(_ context.Context, messages []jetstream.Msg) error {
 		if len(messages) != 1 || consumer.requests != 1 {
 			t.Fatalf("retry lost the original batch or fetched more")
 		}
@@ -175,4 +175,111 @@ func TestFlushTerminatesUndecodableBatch(t *testing.T) {
 	if !message.terminated || poison != 1 {
 		t.Fatalf("terminated=%v poison=%d", message.terminated, poison)
 	}
+}
+
+type shutdownConsumer struct {
+	jetstream.Consumer
+	message jetstream.Msg
+	cancel  context.CancelFunc
+	fetched bool
+}
+
+func (c *shutdownConsumer) Fetch(_ int, _ ...jetstream.FetchOpt) (jetstream.MessageBatch, error) {
+	messages := make(chan jetstream.Msg, 1)
+	if !c.fetched {
+		c.fetched = true
+		messages <- c.message
+		c.cancel()
+	}
+	close(messages)
+	return fixtureBatch{messages}, nil
+}
+
+func TestRunRetriesFailedFlushDuringShutdownWithinBudget(t *testing.T) {
+	t.Run("cancels an in-flight flush when the drain budget expires", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		consumer := &fixtureConsumer{message: fixtureMessage{body: []byte("abc")}}
+		budget := 50 * time.Millisecond
+		err := Run(ctx, consumer, 1, time.Hour, time.Second, budget, func(work context.Context, _ []jetstream.Msg) error {
+			cancel()
+			select {
+			case <-work.Done():
+				return context.Cause(work)
+			case <-time.After(time.Second):
+				return errors.New("flush context remained active after shutdown budget")
+			}
+		}, func(int) {})
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("flush returned %v, want shutdown deadline error", err)
+		}
+	})
+
+	t.Run("retries and succeeds within drain budget", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		consumer := &shutdownConsumer{message: fixtureMessage{body: []byte("abc")}, cancel: cancel}
+		attempts := 0
+		started := time.Now()
+		err := Run(ctx, consumer, 64, time.Hour, time.Second, 3*time.Second, func(_ context.Context, messages []jetstream.Msg) error {
+			attempts++
+			if len(messages) != 1 {
+				t.Fatalf("got %d messages, want 1", len(messages))
+			}
+			if attempts == 1 {
+				return errors.New("transient s3 error")
+			}
+			return nil
+		}, func(int) {})
+		if err != nil {
+			t.Fatalf("expected shutdown retry to succeed, got %v", err)
+		}
+		if attempts != 2 || time.Since(started) < RetryWait {
+			t.Fatalf("attempts=%d elapsed=%s, want 2 attempts after retry wait", attempts, time.Since(started))
+		}
+	})
+
+	t.Run("stops retrying once drain budget expires", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		consumer := &shutdownConsumer{message: fixtureMessage{body: []byte("abc")}, cancel: cancel}
+		attempts := 0
+		wantErr := errors.New("persistent s3 error")
+		err := Run(ctx, consumer, 64, time.Hour, time.Second, 200*time.Millisecond, func(_ context.Context, _ []jetstream.Msg) error {
+			attempts++
+			return wantErr
+		}, func(int) {})
+		if !errors.Is(err, wantErr) || attempts != 1 {
+			t.Fatalf("got err=%v attempts=%d, want %v with 1 attempt", err, attempts, wantErr)
+		}
+	})
+
+	t.Run("zero drain budget aborts without retry", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		consumer := &shutdownConsumer{message: fixtureMessage{body: []byte("abc")}, cancel: cancel}
+		attempts := 0
+		wantErr := errors.New("transient error")
+		err := Run(ctx, consumer, 64, time.Hour, time.Second, 0, func(_ context.Context, _ []jetstream.Msg) error {
+			attempts++
+			return wantErr
+		}, func(int) {})
+		if !errors.Is(err, wantErr) || attempts != 1 {
+			t.Fatalf("got err=%v attempts=%d, want %v with 1 attempt", err, attempts, wantErr)
+		}
+	})
+
+	t.Run("batch id mismatch is not retried on shutdown", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		consumer := &shutdownConsumer{message: fixtureMessage{body: []byte("abc")}, cancel: cancel}
+		attempts := 0
+		err := Run(ctx, consumer, 64, time.Hour, time.Second, 3*time.Second, func(_ context.Context, _ []jetstream.Msg) error {
+			attempts++
+			return errBatchID
+		}, func(int) {})
+		if !errors.Is(err, errBatchID) || attempts != 1 {
+			t.Fatalf("got err=%v attempts=%d, want errBatchID with 1 attempt", err, attempts)
+		}
+	})
 }
