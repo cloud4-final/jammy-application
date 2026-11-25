@@ -42,8 +42,8 @@ type S3 struct {
 	UploadSlot chan struct{}
 }
 
-func uploadOptions(o *s3.Options) {
-	o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
+// Avoid reading the rate-limited body twice, once to sign and once to transmit.
+func signWithoutPayloadHash(o *s3.Options) {
 	o.APIOptions = append(o.APIOptions, v4.SwapComputePayloadSHA256ForUnsignedPayloadMiddleware)
 }
 
@@ -61,7 +61,7 @@ func (s S3) Put(ctx context.Context, key string, body io.ReadSeeker, size int64,
 		return s.multipart(ctx, key, src, size, media, max(initialPart, 1+(size-1)/10000))
 	}
 	_, err := s.Client.PutObject(ctx, &s3.PutObjectInput{Bucket: &s.Bucket, Key: &key,
-		Body: ratelimit.New(ctx, body, s.Limit), ContentLength: &size, ContentType: &media}, uploadOptions)
+		Body: ratelimit.New(ctx, body, s.Limit), ContentLength: &size, ContentType: &media}, signWithoutPayloadHash)
 	return err
 }
 
@@ -83,7 +83,7 @@ func (s S3) multipart(ctx context.Context, key string, src io.ReaderAt, size int
 		number := int32(len(completed) + 1)
 		body := ratelimit.New(ctx, io.NewSectionReader(src, offset, length), s.Limit)
 		part, err := s.Client.UploadPart(ctx, &s3.UploadPartInput{Bucket: &s.Bucket, Key: &key, UploadId: start.UploadId,
-			PartNumber: &number, Body: body, ContentLength: &length}, uploadOptions)
+			PartNumber: &number, Body: body, ContentLength: &length}, signWithoutPayloadHash)
 		if err != nil {
 			return err
 		}

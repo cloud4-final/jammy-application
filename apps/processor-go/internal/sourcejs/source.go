@@ -34,6 +34,8 @@ func FailedCount(err error) int {
 	return 0
 }
 
+const nakDelay = time.Second
+
 var errBatchID = errors.New("Nats-Msg-Id does not match batch_id")
 
 func Process(ctx context.Context, store Committer, messages []jetstream.Msg, recordPoison func()) ([]bool, time.Time, error) {
@@ -45,13 +47,15 @@ func Process(ctx context.Context, store Committer, messages []jetstream.Msg, rec
 	for _, message := range messages {
 		batch, received, err := decode(message)
 		if err != nil {
-			if !errors.Is(err, errBatchID) {
-				if termErr := message.Term(); termErr == nil {
-					recordPoison()
-					continue
-				} else {
-					err = errors.Join(err, termErr)
-				}
+			termErr := message.Term()
+			switch {
+			case termErr == nil:
+				recordPoison()
+				continue
+			case errors.Is(termErr, jetstream.ErrMsgAlreadyAckd):
+				continue
+			default:
+				err = errors.Join(err, termErr)
 			}
 			rejected = err
 			rejectedCount++
@@ -69,6 +73,9 @@ func Process(ctx context.Context, store Committer, messages []jetstream.Msg, rec
 	}
 	duplicates, err := store.Commit(ctx, batches)
 	if err != nil {
+		for _, message := range valid {
+			_ = message.NakWithDelay(nakDelay)
+		}
 		return nil, time.Time{}, processError{len(valid) + rejectedCount, err}
 	}
 	for _, message := range valid {

@@ -206,6 +206,7 @@ class Archiver:
 
 
 async def serve(config, stop):
+    setup_logging("archiver", config.common)
     config.stage.mkdir(parents=True, exist_ok=True)
     for previous in config.stage.glob("jammy-archive-*.parquet"):
         if previous.is_file():
@@ -236,7 +237,6 @@ async def serve(config, stop):
 @config_error_exit
 def main() -> None:
     config = ArchiveConfig.from_env()
-    setup_logging("archiver", config.common)
     lifecycle.run(lambda stop: serve(config, stop), config.common)
 
 

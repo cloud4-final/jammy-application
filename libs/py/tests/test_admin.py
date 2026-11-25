@@ -15,15 +15,57 @@ def test_readyz_tracks_dependency():
         async def check():
             return connected
 
-        admin = AdminServer(0, {"dependency": check})
+        async def healthy():
+            return True
+
+        admin = AdminServer(0, {"dependency": check, "healthy": healthy})
         await admin.start()
         try:
             async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{admin.port}") as client:
-                assert (await client.get("/readyz")).status_code == 503
+                response = await client.get("/readyz")
+                assert response.status_code == 503
+                assert response.headers["content-type"] == "application/json"
+                assert response.json() == {
+                    "status": "fail", "checks": {"dependency": "fail", "healthy": "ok"},
+                }
                 connected = True
-                assert (await client.get("/readyz")).status_code == 200
+                response = await client.get("/readyz")
+                assert response.status_code == 200
+                assert response.json() == {
+                    "status": "ok", "checks": {"dependency": "ok", "healthy": "ok"},
+                }
                 admin.set_draining()
-                assert (await client.get("/readyz")).status_code == 503
+                response = await client.get("/readyz")
+                assert response.status_code == 503
+                assert response.json() == {"status": "fail", "checks": {}}
+        finally:
+            await admin.close()
+
+    asyncio.run(exercise())
+
+
+def test_readyz_reports_timeout_and_exception_independently():
+    async def exercise():
+        async def slow():
+            await asyncio.sleep(3)
+            return True
+
+        async def broken():
+            raise ConnectionError
+
+        async def healthy():
+            return True
+
+        admin = AdminServer(0, {"slow": slow, "broken": broken, "healthy": healthy})
+        await admin.start()
+        try:
+            async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{admin.port}") as client:
+                async with asyncio.timeout(2):
+                    response = await client.get("/readyz")
+                assert response.status_code == 503
+                assert response.json() == {
+                    "status": "fail", "checks": {"slow": "fail", "broken": "fail", "healthy": "ok"},
+                }
         finally:
             await admin.close()
 

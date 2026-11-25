@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
@@ -25,6 +26,11 @@ func TestClientSignsPathStyleCustomEndpoint(t *testing.T) {
 	client, err := New(context.Background())
 	if err != nil {
 		t.Fatal(err)
+	}
+	options := client.Options()
+	if options.RequestChecksumCalculation != aws.RequestChecksumCalculationWhenRequired ||
+		options.ResponseChecksumValidation != aws.ResponseChecksumValidationWhenRequired {
+		t.Fatal("S3 client must calculate and validate checksums only when required")
 	}
 	bucket, key := "jammy", "object"
 	if _, err := client.HeadObject(context.Background(), &s3.HeadObjectInput{Bucket: &bucket, Key: &key}); err != nil {

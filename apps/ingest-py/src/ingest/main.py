@@ -505,21 +505,21 @@ async def _serve_worker(
 def _child(
     config, slots, ready, samples, listener, worker_index, inflight=None
 ) -> None:
-    setup_logging("ingest", config.common)
-    obs.setup_tracing("ingest", config.common)
-    state = IntakeState(
-        config,
-        slots=slots,
-        inflight=inflight,
-        ready_event=ready,
-        observe=samples.put,
-    )
-    lifecycle.run(
-        lambda stop: _serve_worker(
+    async def serve(stop):
+        setup_logging("ingest", config.common)
+        obs.setup_tracing("ingest", config.common)
+        state = IntakeState(
+            config,
+            slots=slots,
+            inflight=inflight,
+            ready_event=ready,
+            observe=samples.put,
+        )
+        await _serve_worker(
             config, state, stop, listener, worker_index=worker_index
-        ),
-        config.common,
-    )
+        )
+
+    lifecycle.run(serve, config.common)
 
 
 async def _supervise(config, stop, metrics) -> None:
@@ -590,6 +590,7 @@ async def _supervise(config, stop, metrics) -> None:
 
 
 async def _run(config: IngestConfig, stop: asyncio.Event) -> None:
+    setup_logging("ingest", config.common)
     metrics = IntakeMetrics(
         obs.setup("ingest", config.common), config.max_inflight
     )
@@ -609,7 +610,6 @@ async def _run(config: IngestConfig, stop: asyncio.Event) -> None:
 @config_error_exit
 def main() -> None:
     config = IngestConfig.from_env()
-    setup_logging("ingest", config.common)
     lifecycle.run(lambda stop: _run(config, stop), config.common)
 
 
