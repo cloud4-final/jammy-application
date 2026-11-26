@@ -26,7 +26,7 @@ Provide an overlay outside version control, for example `/path/to/site-values.ya
 
 Create the namespace and prepare the Secret before installation. The Secret uses `DATABASE_URL` for database users, `HMAC_KEYS` for the instruction API key map, and `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` when supplying AWS credentials through the chart. AWS keys may be omitted when the SDK obtains credentials through another provider. Prepare the `ghcr-pull` dockerconfigjson Secret in the same namespace for private image pulls.
 
-The chart supplies the mode, stream names, probe ports, and standard Secret references. Use each service's `env` map for settings in [ENV.md](../../../contracts/ENV.md), and its `resources` map to size each workload for the site. Default Services are ClusterIP. To expose an ingest API, set that instance's `service.type` to `NodePort` and optionally set `service.nodePort`. Admin probes and Alloy scrapes use pod port 9090. The ingress NetworkPolicy allows API port 8080 and allows pods in `global.monitoringNamespace` to reach admin port 9090.
+The chart supplies the mode, stream names, probe ports, and standard Secret references. Use each service's `env` map for settings in [ENV.md](../../../contracts/ENV.md), and its `resources` map to size each workload for the site. Default Services are ClusterIP. To expose `instruction-api` or an ingest instance externally, set its `service.type` to `NodePort` and optionally set `service.nodePort`. Admin probes and Alloy scrapes use pod port 9090. The ingress NetworkPolicy allows API port 8080 and allows pods in `global.monitoringNamespace` to reach admin port 9090.
 
 ## Install or render
 

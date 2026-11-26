@@ -173,7 +173,7 @@ Helm은 `jammy-platform-migrate`를 `pre-install` 및 `pre-upgrade` hook으로 �
 ## 6. 포트, probe, 자원
 
 - 장기 실행 서비스의 컨테이너는 admin TCP 9090에서 `/livez`, `/readyz`, `/metrics`를 제공한다. 차트는 `/livez`를 liveness probe, `/readyz`를 readiness probe로 사용한다. Alloy의 Pod scrape용 annotation도 설정한다. 성공하면 종료하는 migrate Job에는 포트와 HTTP probe가 없다.
-- API TCP 8080은 instruction-api, ingest, plantsim에서 사용한다. 기본 Service는 ClusterIP다. 클러스터 외부에서 ingest를 호출해야 하는 사이트는 인스턴스의 `service.type`을 `NodePort`로 설정할 수 있다. 이 경우 9090 probe와 scrape는 Pod 포트를 사용한다. [포트·probe 템플릿](../../deploy/helm/jammy-platform/templates/_helpers.tpl) · [Service 템플릿](../../deploy/helm/jammy-platform/templates/service.yaml)
+- API TCP 8080은 instruction-api, ingest, plantsim에서 사용한다. 기본 Service는 ClusterIP다. 클러스터 외부에서 `instruction-api`나 ingest를 호출해야 하는 사이트는 해당 서비스(`instruction-api.service` 또는 ingest 인스턴스의 `service`)의 `type`을 `NodePort`로 설정할 수 있다. 이 경우 9090 probe와 scrape는 Pod 포트를 사용한다. [포트·probe 템플릿](../../deploy/helm/jammy-platform/templates/_helpers.tpl) · [Service 템플릿](../../deploy/helm/jammy-platform/templates/service.yaml)
 - CPU·메모리 요청과 한도는 [values.yaml](../../deploy/helm/jammy-platform/values.yaml)의 서비스별 `resources.requests`와 `resources.limits`를 확인한다. 사이트에서 덮어쓰는 경우 노드의 할당 가능 자원과 replica 수를 확인한다.
 
 ## 7. 설치 확인

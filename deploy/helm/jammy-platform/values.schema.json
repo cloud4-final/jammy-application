@@ -42,7 +42,12 @@
         "environment": {"type": "string", "minLength": 1}
       }
     },
-    "instruction-api": {"$ref": "#/definitions/app"},
+    "instruction-api": {
+      "allOf": [
+        {"$ref": "#/definitions/app"},
+        {"properties": {"service": {"$ref": "#/definitions/service"}}}
+      ]
+    },
     "dispatcher": {"$ref": "#/definitions/app"},
     "ingest": {
       "allOf": [
@@ -93,16 +98,17 @@
         "name": {"type": "string", "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$", "maxLength": 40},
         "stream": {"type": "string", "pattern": "^[^.,* >/[:space:]]+$"},
         "nodeSelector": {"type": "object", "additionalProperties": {"type": "string"}},
-        "service": {
-          "type": "object",
-          "properties": {
-            "type": {"enum": ["ClusterIP", "NodePort"]},
-            "nodePort": {"type": "integer", "minimum": 1, "maximum": 65535}
-          },
-          "if": {"required": ["nodePort"]},
-          "then": {"required": ["type"], "properties": {"type": {"const": "NodePort"}}}
-        }
+        "service": {"$ref": "#/definitions/service"}
       }
+    },
+    "service": {
+      "type": "object",
+      "properties": {
+        "type": {"enum": ["ClusterIP", "NodePort"]},
+        "nodePort": {"type": "integer", "minimum": 1, "maximum": 65535}
+      },
+      "if": {"required": ["nodePort"]},
+      "then": {"required": ["type"], "properties": {"type": {"const": "NodePort"}}}
     }
   }
 }
