@@ -1,7 +1,9 @@
 {{- range $service := list "instruction-api" "dispatcher" "processor" "archiver" "portal-publisher" "plantsim" }}
-  {{- if (index $.Values $service).enabled }}
+  {{- $svcValues := index $.Values $service }}
+  {{- if $svcValues.enabled }}
+    {{- $svcCfg := default dict $svcValues.service }}
 ---
-{{ include "jammy.service" (dict "root" $ "component" $service "type" "ClusterIP" "service" $service) }}
+{{ include "jammy.service" (dict "root" $ "component" $service "type" (default "ClusterIP" $svcCfg.type) "nodePort" $svcCfg.nodePort "service" $service) }}
   {{- end }}
 {{- end }}
 {{- if .Values.ingest.enabled }}

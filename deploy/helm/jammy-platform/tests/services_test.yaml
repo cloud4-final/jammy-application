@@ -12,7 +12,23 @@ tests:
           path: spec.type
           value: ClusterIP
         template: service.yaml
-  - it: only_ingest_can_expose_a_node_port
+  - it: instruction_api_can_expose_a_node_port
+    set:
+      instruction-api.service: {type: NodePort, nodePort: 30080}
+    template: service.yaml
+    documentSelector:
+      path: metadata.labels["app.kubernetes.io/component"]
+      value: instruction-api
+    asserts:
+      - equal:
+          path: spec.type
+          value: NodePort
+      - equal:
+          path: spec.ports[0].nodePort
+          value: 30080
+      - notExists:
+          path: spec.ports[?(@.name=="admin")].nodePort
+  - it: only_ingest_and_instruction_api_expose_node_port_when_configured
     set:
       ingest.instances[0]:
         name: a1
