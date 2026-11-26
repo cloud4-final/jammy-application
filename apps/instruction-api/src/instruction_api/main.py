@@ -111,7 +111,7 @@ def create_app(
         result = "error" if status >= 500 else REQUEST_RESULTS.get(status)
         if result is None and 400 <= status < 500:
             result = "invalid"
-        if result is not None:
+        if route != "/" and result is not None:
             requests.add(1, {"result": result})
         duration.record(monotonic() - started, {
             "http_request_method": request.method,
@@ -146,6 +146,10 @@ def create_app(
         if not signed.verify(request, body):
             return problem("bad_signature")
         return body
+
+    @app.get("/")
+    async def health():
+        return {"status": "ok"}
 
     @app.post("/v1/instructions")
     async def post_instruction(request: Request):

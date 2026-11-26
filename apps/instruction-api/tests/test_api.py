@@ -217,6 +217,43 @@ def test_repo_uses_two_second_pool_connection_timeout():
     asyncio.run(exercise())
 
 
+def test_root_health_returns_200_without_hmac_or_business_metric(monkeypatch):
+    from jammy_common import admin as admin_module
+    from jammy_common import obs
+    from jammy_common.admin import AdminServer
+    from jammy_common.config import CommonConfig
+    from prometheus_client import CollectorRegistry
+
+    registry = CollectorRegistry()
+    monkeypatch.setattr(obs, "REGISTRY", registry)
+    monkeypatch.setattr(admin_module, "REGISTRY", registry)
+    monkeypatch.setattr(obs.metrics, "set_meter_provider", lambda provider: None)
+    monkeypatch.setenv("SITE_ID", "test")
+    monkeypatch.setenv("INSTANCE_ID", "instruction-test")
+
+    async def exercise():
+        meter = obs.setup("instruction-api", CommonConfig.from_env())
+        app = create_app(None, HMACAuth({"k": KEY}, 300), meter, site_id="a")
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            response = await client.get("/")
+        assert response.status_code == 200
+        assert response.json() == {"status": "ok"}
+
+        admin = AdminServer(0, {})
+        await admin.start()
+        try:
+            async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{admin.port}") as metrics:
+                scraped = await metrics.get("/metrics")
+            assert scraped.status_code == 200
+        finally:
+            await admin.close()
+        assert "jammy_instruction_requests_total{" not in scraped.text
+
+    asyncio.run(exercise())
+
+
 @pytest.mark.parametrize("method", ["POST", "GET"])
 @pytest.mark.parametrize(("setting", "limit"), [(None, 65536), ("1KiB", 1024)])
 def test_oversized_body_stops_at_first_chunk_over_limit(method, setting, limit, monkeypatch):
@@ -605,6 +642,7 @@ def test_metrics_use_closed_results_and_route_templates(dsn, monkeypatch):
     monkeypatch.setenv("INSTANCE_ID", "instruction-test")
 
     async def exercise(client, _):
+        assert (await client.get("/")).status_code == 200
         data = body()
         instruction_id = json.loads(data)["instruction_id"]
         path = f"{PATH}/{instruction_id}"
